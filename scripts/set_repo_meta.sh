@@ -5,15 +5,26 @@
 # （description / topics）只能通过 REST API 修改，需要 Personal Access Token。
 # SSH key 无法用于 API 鉴权。
 #
+# 建 token 的页面：
+#   fine-grained（推荐）: https://github.com/settings/personal-access-tokens/new
+#   注意：不要用 https://github.com/settings/tokens/new（那是 classic，权限过宽）
+#
 # 用法：
-#   1. 建一个 token（见 README 或下方说明）
+#   1. 建一个 token（见下方权限说明）
 #   2. export GITHUB_TOKEN=ghp_xxx    # 或 gh auth login 后运行
 #   3. ./scripts/set_repo_meta.sh
 #
-# token 权限要求（fine-grained token）：
-#   Repository access → 只选 xxdeye/red-ocean-scanner
-#   Permissions → Repository permissions → Metadata: Read and write
-#   这是最小权限，只能改仓库元信息，不能读代码、不能推送，也不能删仓库。
+# token 权限要求（fine-grained token）——两个端点都要 Administration: write：
+#   PATCH /repos/{owner}/{repo}          → Administration (write)
+#   PUT   /repos/{owner}/{repo}/topics   → Administration (write)
+# 注意：Metadata (read) 不够，那只够读。Actions 里也读不到代码内容。
+# Repository access → Only select repositories → 只勾 xxdeye/red-ocean-scanner
+# Permissions → Repository permissions → Administration → Read and write
+#   （其余权限全部保持 No access）
+#
+# 安全做法：把 Expiration 设成 7 天或更短，用完立刻 Revoke。
+#
+# 若用 classic token（不推荐，权限过宽）：需要 repo scope。
 set -euo pipefail
 
 REPO="${REPO:-xxdeye/red-ocean-scanner}"
