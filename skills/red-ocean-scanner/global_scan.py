@@ -131,9 +131,45 @@ def tier_of(n, tiers):
 
 
 # ── 需求：三源自动补全 ────────────────────────────────
+# 通用产品词：补全引擎会把它们从查询里剥掉再匹配，制造虚假需求。
+# 实测：查询 "banana peeling machine software"（不存在的组合）
+#   Google 返回 0 条 ✅
+#   Bing  返回 12 条 ❌ 全是 "banana peeling machine design/reviews/video..."
+# 即 Bing 忽略了 "software"。若不识别，会把完全不存在的需求判成「需求旺」。
+GENERIC_TAIL = {
+    "software", "app", "apps", "tool", "tools", "system", "systems",
+    "platform", "service", "services", "solution", "solutions", "online",
+}
+
+
+def _is_generic_strip(query, suggestion):
+    """suggestion 是否只是 query 剥掉尾部通用产品词后的产物？
+
+    只在 query **以通用产品词结尾**时才可能发生。
+    实测：query="banana peeling machine software" 时 Bing 忽略 "software"，
+    返回 "banana peeling machine design/reviews/video"，与词尾剥离一致 → 丢弃。
+
+    反例（必须保留）：query="habit tracker" 时 "habit tracker app" 是
+    合法的向下细化，不是剥离产物——query 本身不以通用词结尾。
+    """
+    q = re.findall(r"\w+", query.lower())
+    sg = re.findall(r"\w+", suggestion.lower())
+    if not q or not sg:
+        return False
+    if q[-1] not in GENERIC_TAIL:      # query 不以通用产品词结尾 → 不可能是剥离
+        return False
+    stem = q[:]
+    while stem and stem[-1] in GENERIC_TAIL:
+        stem.pop()
+    if not stem:
+        return False
+    # 建议词以去掉通用词后的主干开头，就是在匹配被剥掉的那个词
+    return sg[:len(stem)] == stem
+
+
 def autocomplete(kw):
     q = urllib.parse.quote(kw)
-    merged, src = [], {}
+    merged, src, dropped = [], {}, 0
     for name, url, pick in [
         ("google", f"https://suggestqueries.google.com/complete/search"
                    f"?client=firefox&q={q}", lambda d: d[1]),
@@ -143,29 +179,46 @@ def autocomplete(kw):
     ]:
         try:
             words = pick(json.loads(get(url)))
-            src[name] = len(words)
-            for w in words:
-                if w and w.lower() not in [m.lower() for m in merged]:
+            kept = 0
+            for w in words or []:
+                if not w:
+                    continue
+                if _is_generic_strip(kw, w):
+                    dropped += 1
+                    continue
+                if w.lower() not in [m.lower() for m in merged]:
                     merged.append(w)
+                    kept += 1
+            src[name] = kept
         except Exception:                                    # noqa: BLE001
             src[name] = 0
     return {
         "merged": merged,
         "sources": src,
+        "dropped_generic": dropped,
         "commercial": [w for w in merged if re.search(COMMERCIAL, w, re.I)],
         "informational": [w for w in merged if re.search(INFORMATIONAL, w, re.I)],
     }
 
 
 # ── 消费市场：App Store ────────────────────────────────
+# iTunes 的 entity=software **不排除游戏**，实测搜 "banana peeling machine
+# software" 会返回 Fruit Ninja（373,282 评）并触发「不可撼动的既得利益者」
+# 否决项——一个完全不存在的需求被判成红海。必须按 genre 过滤。
+EXCLUDED_GENRES = {"games"}
+
+
 def appstore(kw, country="us"):
     d = get_json("https://itunes.apple.com/search?term="
                  + urllib.parse.quote(kw)
                  + f"&entity=software&limit=25&country={country}")
-    apps = d.get("results", [])
+    raw = d.get("results", [])
+    apps = [a for a in raw
+            if (a.get("primaryGenreName", "") or "").lower() not in EXCLUDED_GENRES]
     ratings = [(a.get("userRatingCount", 0) or 0) for a in apps]
     return {
         "total": len(apps),
+        "excluded_games": len(raw) - len(apps),
         "max_ratings": max(ratings) if ratings else 0,
         "sum_ratings": sum(ratings),
         "avg_rating": (sum(a.get("averageUserRating", 0) or 0 for a in apps)
@@ -191,20 +244,88 @@ def github(kw):
 
 
 # ── Web/SaaS：搜索结果 ─────────────────────────────────
-def web_serp(kw):
-    try:
-        h = get("https://html.duckduckgo.com/html/?q=" + urllib.parse.quote(kw))
-    except Exception as e:                                   # noqa: BLE001
-        return {"error": str(e)[:50]}
-    titles = [re.sub(r"<[^>]+>", "", t).strip()
-              for t in re.findall(r'class="result__a"[^>]*>(.*?)</a>', h, re.S)]
-    domains = [d.strip() for d in
-               re.findall(r'class="result__url"[^>]*>\s*(.*?)\s*<', h, re.S)]
-    review = [d for d in domains
-              if re.search(r"g2|capterra|getapp|softwareadvice|producthunt|"
-                           r"trustradius|softwaresuggest", d, re.I)]
-    return {"results": len([t for t in titles if t]), "review_sites": len(review),
-            "top": [t for t in titles if t][:5]}
+# DDG 限流时会返回一个含 anomaly 标记的页面，且 **0 条结果**。
+# 如果不识别，就会把「被限流」读成「没有评测站」——一个静默的错误结论。
+# 实测：连续请求 5 次后必然触发。
+DDG_BLOCK = re.compile(r"anomaly|unusual traffic|blocked", re.I)
+REVIEW_SITES = (r"g2\.com|capterra|getapp|softwareadvice|trustradius|"
+                r"softwaresuggest|slashdot|producthunt")
+# B2B 定价信号：标题里出现这些词说明市场已有商业化产品
+PRICE_WORDS = r"pricing|price|plans|free trial|demo|buy|cost|quote"
+
+
+def web_serp(kw, tries=3):
+    """返回评测站密度与定价信号。限流时抛异常，绝不返回 0 伪装成「没有」。"""
+    last = None
+    for i in range(tries):
+        try:
+            h = get("https://html.duckduckgo.com/html/?q="
+                    + urllib.parse.quote(kw))
+        except Exception as e:                               # noqa: BLE001
+            last = FetchError(str(e)[:50])
+            time.sleep(8 * (i + 1))
+            continue
+        if DDG_BLOCK.search(h) or len(h) < 5000:
+            last = RateLimited("DDG 限流（anomaly 页）")
+            time.sleep(12 * (i + 1))
+            continue
+        titles = [re.sub(r"<[^>]+>", "", t).strip()
+                  for t in re.findall(r'class="result__a"[^>]*>(.*?)</a>', h, re.S)]
+        titles = [t for t in titles if t]
+        domains = [d.strip() for d in
+                   re.findall(r'class="result__url"[^>]*>\s*(.*?)\s*<', h, re.S)]
+        if not titles:
+            last = FetchError("页面无结果条目（结构可能变了）")
+            continue
+        return {
+            "results": len(titles),
+            "review_sites": sum(1 for d in domains
+                                if re.search(REVIEW_SITES, d, re.I)),
+            "pricing_signals": sum(1 for t in titles
+                                   if re.search(PRICE_WORDS, t, re.I)),
+            "top": titles[:5],
+        }
+    raise last
+
+
+def decide(supply_thin, demand_str, deadly, supply_dims, n_dims):
+    """裁决核心：纯函数，不依赖网络，便于回归测试。
+
+    返回 (verdict, kind, reason)。
+
+    顺序很重要：先算矩阵，再让否决项生效。矩阵能区分「无人区」（没人要）
+    和「红海」（打不过），如果在矩阵之前就因否决项返回「红」，会把无人区
+    误报成红海——两者的应对完全不同。
+    """
+    thin_ok = supply_thin is not None and supply_thin >= 0.5
+    demand_ok = demand_str is not None and demand_str >= 0.5
+
+    if thin_ok and demand_ok:
+        verdict, kind, reason = "绿", "机会", "供给稀薄 + 需求存在"
+    elif thin_ok and not demand_ok:
+        verdict, kind = "🟠", "无人区"
+        reason = ("供给稀薄但需求信号弱 → 大概率是没人关心的领域。"
+                  "**低竞争在这里等于没市场**")
+    else:
+        verdict, kind = "红", "红海"
+        reason = ("需求旺但供给厚 → 已被认领" if demand_ok
+                  else "供给厚且需求弱 → 没有进入理由")
+        if supply_thin is not None and supply_thin < 1.0 and supply_dims:
+            worst = min(supply_dims, key=lambda x: x[1] / x[2])
+            reason += f"（主因：{worst[0]}）"
+
+    # 否决项只在矩阵给出「机会」时一票否决。矩阵说红海时它是冗余信息；
+    # 矩阵说无人区时，「没有市场」比「有既得利益者」更准确地描述问题。
+    if deadly and verdict == "绿":
+        verdict, kind = "红", "红海"
+        reason = "矩阵指向机会，但有硬性否决项 → " + deadly[0]
+    elif deadly and verdict == "🟠":
+        reason += "（另有否决项：" + deadly[0] + "）"
+
+    if n_dims < 3:
+        verdict += "(覆盖度低)"
+        reason += f"；仅测到 {n_dims} 个维度，把握有限"
+    return verdict, kind, reason
 
 
 def scan(kw, market="auto"):
@@ -217,12 +338,18 @@ def scan(kw, market="auto"):
         r["demand"] = None
         r["deadly"].append(f"需求数据未取到（{str(e)[:40]}）")
 
-    for key, fn in [("appstore", appstore), ("github", github), ("web", web_serp)]:
+    for key, fn in [("appstore", appstore), ("github", github)]:
         try:
             r[key] = fn(kw)
         except Exception as e:                               # noqa: BLE001
             r[key] = {"error": str(e)[:50]}
         time.sleep(1.5)
+    # 搜索结果只作参考展示，不参与评分：DDG/Startpage/Mojeek/searx 实测都会
+    # 限流，把它计入评分会让分数随搜素引擎的心情波动。
+    try:
+        r["web"] = web_serp(kw)
+    except Exception as e:                                   # noqa: BLE001
+        r["web"] = {"error": str(e)[:50]}
 
     # ── 市场类型判定 ────────────────────────────────────
     is_b2b = bool(re.search(B2B_HINT, kw, re.I))
@@ -231,14 +358,22 @@ def scan(kw, market="auto"):
     r["market"] = market
     r["is_b2b_guess"] = is_b2b
 
-    s = 0
+    # ── 评分：按维度分别打薄分，最后取平均 ──────────────
+    #
+    # 为什么取平均而不是相加：不同市场能测到的维度数不同
+    # （消费级有 App Store，B2B 没有）。相加会导致 B2B 满分只有 8，
+    # 恰好卡在绿线上——任何一项掉档就永远够不着绿灯。维度数不可比，
+    # 就不该直接比分数。
+    #
+    # 每个维度的分都是 0-3 的「薄分」（3 = 供给稀薄，0 = 饱和）。
+    dims = []          # [(维度名, 薄分, 满分)]
 
-    # ① 开发者供给（0-3）
+    # ① 开发者供给
     gh = r.get("github") or {}
     if "total" in gh:
         label, pts = tier_of(gh["total"], GH_TIERS)
         r["gh_tier"] = label
-        s += pts
+        dims.append(("开发者供给", pts, 3))
         if gh["total"] < 300:
             r["evidence"].append(f"GitHub 仅 {gh['total']} 仓库 → 开发者侧几乎无人做")
         elif gh["total"] < 1500:
@@ -249,13 +384,13 @@ def scan(kw, market="auto"):
             r["deadly"].append(
                 f"头部仓库 {gh['max_stars']}★ → 成熟开源替代品，会压制付费意愿")
 
-    # ② 消费供给（0-3，仅消费市场）
+    # ② 消费供给（仅消费级市场）
     ap = r.get("appstore") or {}
     if "max_ratings" in ap:
         if market == "consumer":
             label, pts = tier_of(ap["max_ratings"], APP_TIERS)
             r["app_tier"] = label
-            s += pts
+            dims.append(("消费供给", pts, 3))
             if ap["max_ratings"] >= APP_MONOPOLY:
                 r["deadly"].append(
                     f"App Store 头部 {ap['max_ratings']:,} 条评价 → "
@@ -264,9 +399,6 @@ def scan(kw, market="auto"):
                 r["evidence"].append(
                     f"App Store 头部仅 {ap['max_ratings']:,} 条评价 → "
                     f"没有强势消费级产品")
-            if ap["total"] < 5:
-                r["deadly"].append(
-                    f"App Store 仅 {ap['total']} 款同类 → 可能是伪需求或未被市场验证")
             if ap["avg_rating"] and ap["avg_rating"] < 3.6 and ap["total"] >= 8:
                 r["evidence"].append(
                     f"同类 App 均分仅 {ap['avg_rating']:.2f} → 现有产品口碑差，缺口信号")
@@ -275,49 +407,76 @@ def scan(kw, market="auto"):
                 "B2B 方向，App Store 评价数不作判据（企业买家很少写评价："
                 "兽医类最高 3.4 万 vs 消费类 760 万）")
 
-    # ③ 需求（0-3）
+    # 已删除的实验维度：App Store 「在售产品数」。
+    # 实测无区分度——所有品类都返回 22-25 款
+    # （funeral home management 25 / todo list app 23 / receipt scanner 22），
+    # 这是 iTunes 模糊匹配的产物，不是市场信号，而且会错误惩罚 B2B
+    # （B2B 软件本来就不在 App Store 卖）。宁可用 2 个真维度，
+    # 也不要 3 个里面掺一个假的。
+
+    # 消费供给已在 ② 计入（仅消费级市场）。B2B 因此只有 2 个维度，
+    # 这是真实的信息缺口，不是评分缺陷——所以分数按**已测维度**取比例，
+    # 并在输出里标注覆盖度。
+
+    # ④ 需求
     d = r.get("demand")
     if d and d["merged"]:
         n, c = len(d["merged"]), len(d["commercial"])
         if c >= 5:
-            s += 3
+            dims.append(("需求强度", 3, 3))
             r["evidence"].append(f"{c} 条商业意图补全词，例《{d['commercial'][0]}》")
         elif c >= 2:
-            s += 2
+            dims.append(("需求强度", 2, 3))
             r["evidence"].append(f"{c} 条商业意图补全词")
         elif n >= 8:
-            s += 1
+            dims.append(("需求强度", 1, 3))
+        else:
+            dims.append(("需求强度", 0, 3))
         if d["informational"] and len(d["informational"]) > c:
             r["evidence"].append(
                 f"信息型词({len(d['informational'])})多于商业型({c}) → "
                 f"用户在找知识而非产品，付费意愿存疑")
     elif d is not None:
+        dims.append(("需求强度", 0, 3))
         r["deadly"].append("三个自动补全源均无结果 → 可能没人在搜")
 
-    r["score"] = max(0, min(10, s))
-    # 裁决优先级：数据不完整 > 否决项 > 分数。
-    # 关键：**任何否决项一律判红，不看分数。** 一个"已有 760 万评价的
-    # 既得利益者"的方向，绝不能因为别处得分高就降级成黄灯。
-    if "total" not in (r.get("github") or {}):
-        r["verdict"] = "黄(不完整)"
-    elif r["deadly"]:
-        r["verdict"] = "红"
-    elif r["score"] >= 8:
-        r["verdict"] = "绿"
-    elif r["score"] >= 5:
-        r["verdict"] = "黄"
-    else:
-        r["verdict"] = "红"
+    r["dimensions"] = [{"name": nm, "thin": sc, "of": of} for nm, sc, of in dims]
+    got, tot = sum(x[1] for x in dims), sum(x[2] for x in dims)
+
+    # 把维度分成「供给」与「需求」两类，分别汇总。
+    # 为什么不在一个分数里平均：供给和需求回答的是两个不同问题——
+    #   供给薄 + 没需求 = 无人区（别做）
+    #   供给厚 + 有需求 = 红海（别做）
+    #   供给薄 + 有需求 = 机会
+    # 平均会把「无人区」和「红海」都算成中间分，两者却被混为一谈。
+    SUPPLY_DIMS = ("开发者供给", "消费供给")
+    sup = [x for x in dims if x[0] in SUPPLY_DIMS]
+    dem = [x for x in dims if x[0] not in SUPPLY_DIMS]
+    r["supply_thin"] = (sum(x[1] for x in sup) / sum(x[2] for x in sup)) if sup else None
+    r["demand_str"] = (sum(x[1] for x in dem) / sum(x[2] for x in dem)) if dem else None
+    r["score"] = round(10 * got / tot) if tot else 0
+    r["coverage"] = len(dims)
+    # 裁决优先级：否决项 > 覆盖度不足 > 分数。
+    # 否决项一律判红不看分数：一个"已有 760 万评价的既得利益者"的方向，
+    # 绝不能因为别处得分高就降级成黄灯。
+    # 覆盖度不足时降级为「不完整」：维度少意味着不确定性大，
+    # 这时给绿灯是在假装有把握。
+    r["verdict"], r["verdict_kind"], r["verdict_reason"] = decide(
+        r["supply_thin"], r["demand_str"], r["deadly"], sup, len(dims))
     return r
 
 
 def render(r):
-    icon = {"绿": "🟢", "黄": "🟡", "红": "🔴"}.get(r["verdict"], "🟡")
     mk = {"consumer": "消费级", "business": "B2B"}.get(r["market"], r["market"])
     L = [f"\n{'='*70}",
-         f"{icon} {r['keyword']}    {r['verdict']}    {r['score']}/10"
+         f"{r['verdict']}  {r['keyword']}    {r['score']}/10"
          f"   [global · {mk}市场]",
-         f"{'='*70}"]
+         f"{'='*70}",
+         f"裁决  {r.get('verdict_reason','')}"]
+    st, ds = r.get("supply_thin"), r.get("demand_str")
+    if st is not None and ds is not None:
+        L.append(f"      供给薄度 {st:.0%}（越高越没人做）   "
+                 f"需求强度 {ds:.0%}（越高越有人要）")
     d = r.get("demand")
     if d:
         src = " ".join(f"{k}:{v}" for k, v in (d.get("sources") or {}).items())
@@ -337,7 +496,14 @@ def render(r):
                  f"头部 {gh['max_stars']}★")
     w = r.get("web") or {}
     if "results" in w:
-        L.append(f"Web   搜索结果 {w['results']} 条，评测站 {w['review_sites']} 个")
+        L.append(f"Web   搜索结果 {w['results']} 条，评测站 {w['review_sites']} 个，"
+                 f"定价信号 {w.get('pricing_signals',0)} 条")
+    if r.get("dimensions"):
+        L.append(f"评分  基于 {r.get('coverage',0)} 个维度"
+                 f"（每个 0-3 薄分，取比例，维度数无关）")
+        for x in r["dimensions"]:
+            bar = "▓" * x["thin"] + "░" * (x["of"] - x["thin"])
+            L.append(f"        {x['name']:10} {bar} {x['thin']}/{x['of']}")
     if r["evidence"]:
         L.append("依据")
         for x in r["evidence"]:
@@ -389,7 +555,8 @@ def main():
     if len(res) > 1:
         print(f"\n{'='*70}\n排名（分高者优先）")
         for i, r in enumerate(sorted(res, key=lambda x: -x["score"]), 1):
-            print(f"  {i}. {r['score']:>2}/10  {r['verdict']:<9} {r['keyword']}")
+            print(f"  {i}. {r['score']:>2}/10  {r['verdict']:<16}"
+                  f"{r.get('verdict_kind',''):<6} {r['keyword']}")
 
 
 if __name__ == "__main__":

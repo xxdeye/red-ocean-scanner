@@ -114,3 +114,55 @@ Firefox 扩展、JetBrains 插件、WordPress 插件三个独立生态对同一�
 
 排序一致说明这些是**真实的供给信号**，不是单一平台的噪声。
 目前引擎只用 GitHub + App Store 两个（覆盖面最广），其余作为交叉验证备选。
+
+## 数据质量陷阱（第三轮审计发现，已修）
+
+这一节记录的是**静默错误**——不会报错、但会得出相反结论的问题。
+它们比「取不到数据」危险得多。
+
+### ① iTunes `entity=software` 不排除游戏
+
+实测搜 `banana peeling machine software`（不存在的需求）会返回
+**Fruit Ninja®（373,282 条评价）**，触发「不可撼动的既得利益者」否决项，
+把一个空需求判成红海。
+
+修法：按 `primaryGenreName` 过滤掉 Games。实测该字段可靠，
+且游戏会稳定出现在 `entity=software` 的结果里。
+
+### ② Bing 自动补全会剥掉尾部通用产品词
+
+同一个不存在的查询，两个源的返回完全不同：
+
+| 源 | `banana peeling machine software` |
+|---|---|
+| Google | **0 条** ✅ |
+| Bing | **12 条** ❌ 全是 `banana peeling machine design / reviews / video` |
+
+Bing 忽略了 `software`，改为匹配剩余部分。不识别就会把空需求判成「需求旺」。
+
+修法：只在**查询本身以通用产品词结尾**时，丢弃「等于查询减掉该词」的建议。
+必须限定这个条件——否则会误杀合法细化：
+`habit tracker` → `habit tracker app` 是正常的向下细化，不是剥离产物。
+
+### ③ DuckDuckGo 限流返回 0 结果而非报错
+
+连续请求 5 次后必然触发。页面含 `anomaly` 标记且**结果数为 0**。
+原实现会把它读成「0 个评测站」，即「没有竞争」。
+
+修法：检测 anomaly 标记，退避重试，失败就明确报「维度缺失」并提示
+**不要**读成没有竞争。同时把 SERP 从评分中移除——它太不稳定，
+会让分数随搜索引擎的心情波动。
+
+### ④ 被证伪并删除的信号
+
+| 信号 | 为什么删 |
+|---|---|
+| App Store「在售产品数」 | 无区分度：所有品类都返回 22-25 款（模糊匹配产物），且错误惩罚 B2B |
+| StackOverflow 模糊搜索 | 噪声极大（`invoice excel` 匹配到 Automapper 问题）。改用 `inname` 精确标签 |
+| npm / PyPI 搜索 | 同样模糊（`sports team scheduling` 返回 52,825 个包）。只用精确下载量端点 |
+| App Store 评论 RSS | 实测返回 0 条 |
+| Google 新闻 RSS | 恒定 100 条，无区分度 |
+| SERP 评测站密度 | DDG/Startpage/Mojeek/searx 全部限流，不稳定 |
+
+**原则：宁可少一个维度，也不要一个有噪声的维度。** 噪声维度会让分数看起来
+更精确，实际更错。

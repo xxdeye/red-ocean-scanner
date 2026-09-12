@@ -262,7 +262,9 @@ Without a token it still works, just slower. The Chinese engine is unaffected.
 **Global engine** — consumer red ocean with an unbeatable incumbent:
 
 ```
-🔴 receipt scanner    红    5/10   [global · 消费级市场]
+红  receipt scanner    5/10   [global · 消费级市场]
+裁决  有硬性否决项
+      供给薄度 50%（越高越没人做）   需求强度 100%（越高越有人要）
 消费  App Store 22 款，头部 7,642,608 条评价，均分 4.72
         7,642,608 评 ★4.9  Fetch: Receipts for Gift Cards
         1,360,696 评 ★4.9  Scanner App: Genius Scan
@@ -333,7 +335,31 @@ different HTTP client.**
 
 ## How scoring works
 
-Score = supply scarcity + incumbent strength + distribution channel.
+The verdict comes from a **supply × demand matrix**, not a single blended score.
+Supply and demand answer different questions, and averaging them merges two
+opposite dead ends into one middle number:
+
+|  | Strong demand | Weak demand |
+|---|---|---|
+| **Thin supply** | 🟢 **Opportunity** | 🟠 **Dead zone** — don't |
+| **Thick supply** | 🔴 **Red ocean** — don't | 🔴 **Red ocean** — don't |
+
+**The orange cell is the one that catches people out.** Most niche advice says
+"find where competition is low." But thin supply has two opposite causes:
+*nobody's doing it* and *nobody wants it*. Only measuring supply conflates them.
+
+Verdict precedence: `blocker > low coverage > matrix`. Any blocker forces red
+regardless of everything else. This came from a real failure — `receipt scanner`
+had thin GitHub supply (1,400 repos) and strong demand, but its App Store leader
+is **free with 7,642,608 ratings**. Any blended score lets that fact be averaged
+away, so blockers override.
+
+`(coverage low)` means only 2 dimensions were measurable (B2B directions have no
+App Store criterion). That's a real information gap, so it's labelled rather than
+hidden.
+
+The numeric score is **for ranking only** — it measures supply thinness, not
+demand, and never replaces the paid-validation step.
 
 **Only reliable signals are scored.** Measured signal quality:
 
@@ -379,6 +405,15 @@ demoted to "reference only" and never scored.
   score.
 - **Reddit, Product Hunt, G2, Capterra, AlternativeTo return HTTP 403** — platform
   blocks, not network issues. They need official API keys or paid data.
+- **Search-engine sources are unreliable.** DuckDuckGo rate-limits after ~5
+  requests and returns a page with *zero results* rather than an error — which
+  reads as "no competition" if unhandled. The scanner detects and retries this,
+  and SERP data is deliberately excluded from scoring so the verdict cannot
+  drift with a search engine's mood.
+- **Two data-quality traps are handled but worth knowing:** iTunes'
+  `entity=software` does *not* exclude games (a nonsense query matched Fruit
+  Ninja's 373k ratings), and Bing's autocomplete silently strips trailing
+  generic words like "software", manufacturing demand that doesn't exist.
 - **Intent data, not sales data.** The scan proves supply is thin. It does **not**
   prove anyone has ever paid. That last step is manual and mandatory: Chinese market
   → search Xianyu (闲鱼) for real completed sales; global market → check pricing
@@ -404,7 +439,9 @@ skills/red-ocean-scanner/
     data-sources.md     # measured source capability matrix + the Node/urllib lesson
     calibration.md      # all measured calibration anchors
 scripts/
-  validate_skill.py     # checks the Agent Skills spec rules
+  validate_skill.py     # spec rules + runs the regression tests
+tests/
+  test_decide.py        # offline regression on the verdict matrix
 docs/
   实测数据-中文.md        # measured scores across 18 real Chinese keywords
 ```

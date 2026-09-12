@@ -103,6 +103,21 @@ def main():
             print(f"{YEL}   ! {w}{RST}")
             warnings += 1
 
+    # 跑离线回归测试（不打网络，只验裁决逻辑）
+    tests = sorted((ROOT / "tests").glob("test_*.py")) if (ROOT / "tests").exists() else []
+    for t in tests:
+        import subprocess
+        r = subprocess.run([sys.executable, str(t)], capture_output=True, text=True)
+        last = [x for x in r.stdout.strip().splitlines() if x.strip()]
+        summary = last[-1].strip() if last else "(无输出)"
+        if r.returncode == 0:
+            print(f"{GRN}PASS{RST} {t.name} — {summary}")
+            passed += 1
+        else:
+            print(f"{RED}FAIL{RST} {t.name} — {summary}")
+            print(r.stdout[-800:])
+            issues += 1
+
     print("-" * 52)
     print(f"通过 {passed} · 错误 {issues} · 警告 {warnings}")
     return 1 if issues else 0
