@@ -396,6 +396,32 @@ demoted to "reference only" and never scored.
 
 **Chinese** (measured): see [`docs/实测数据-中文.md`](docs/实测数据-中文.md).
 
+## Beyond avoiding red oceans: how to actually find a blue one
+
+The scanner can only **rule out** — it measures supply and search intent, both of
+which exist only for needs that have already been named. A genuine blue ocean is
+usually created, not found, so it will never appear in this data.
+
+`references/blue-ocean-methods.md` covers the part the tool can't do:
+
+- **Moats (7 Powers).** A green light proves supply is thin; it says nothing about
+  whether you can hold the position. The book's test is *Benefit + Barrier* — a
+  cost or quality advantage **plus** something rivals can't copy without hurting
+  themselves. Most apparently-good businesses have zero Powers. For a solo
+  developer only two are realistically available: **counter-positioning** (a model
+  incumbents can't adopt without cannibalising themselves) and **switching costs**.
+- **The ERRC grid.** The ladder only narrows along one axis. ERRC moves four at
+  once — Eliminate, Reduce, Raise, Create — to redraw the value curve so
+  competition becomes irrelevant. The *Create* row is where blue oceans come from.
+- **Six paths.** A systematic way to look past industry boundaries: substitute
+  industries, strategic groups, buyer groups, complements, functional vs emotional
+  appeal, and time.
+
+That file also states plainly what the scanner **cannot** see: unnamed needs,
+non-English/Chinese markets, your own cost of entry, timing, and regulatory
+resets. **The tool excludes; you create.** Treating the scanner as an idea
+generator yields a pile of narrow gates nobody wants.
+
 ## Limits — read this
 
 - **B2B markets are only weakly assessed.** App Store rating counts are
@@ -429,22 +455,31 @@ demoted to "reference only" and never scored.
 
 ```
 skills/red-ocean-scanner/
-  SKILL.md              # agent skill: verdict rubric, signal taxonomy, workflows
-  scan.py               # unified entry point (mode × engine)
-  global_scan.py        # global/English engine
-  red_ocean_scan.py     # Chinese market engine
-  ladder_scan.py        # narrowing ladder: broad word → narrow gates
-  geo_scan.py           # geographic arbitrage across app-store regions
+  SKILL.md                     # verdict rubric, signal taxonomy, workflow
+  scan.py                      # unified entry point (mode × engine)
+  global_scan.py               # global/English engine
+  red_ocean_scan.py            # Chinese market engine
+  ladder_scan.py               # narrowing ladder: broad word → narrow gates
+  geo_scan.py                  # geographic arbitrage across app-store regions
   references/
-    data-sources.md     # measured source capability matrix + the Node/urllib lesson
-    calibration.md      # all measured calibration anchors
+    blue-ocean-methods.md      # moats (7 Powers), ERRC grid, six paths — how to
+                               #   go from "avoid red oceans" to "create a blue one"
+    engine-global.md           # global engine detail
+    engine-cn.md               # Chinese engine detail
+    modes.md                   # ladder + geo detail
+    calibration.md             # all measured calibration anchors
+    data-sources.md            # source capability matrix + silent-failure traps
 scripts/
-  validate_skill.py     # spec rules + runs the regression tests
+  validate_skill.py            # spec rules + token budget + runs the tests
 tests/
-  test_decide.py        # offline regression on the verdict matrix
+  test_decide.py               # offline regression on the verdict matrix
+  trigger_eval.json            # 20 trigger queries for description tuning
 docs/
-  实测数据-中文.md        # measured scores across 18 real Chinese keywords
+  实测数据-中文.md               # measured scores across 18 Chinese keywords
 ```
+
+SKILL.md is kept to **234 lines / ~5,000 tokens** (the spec's progressive-disclosure
+budget). Everything else loads on demand.
 
 ## License
 

@@ -288,6 +288,15 @@ def web_serp(kw, tries=3):
     raise last
 
 
+# 绿灯不等于蓝海：工具只测「有没有人在做」，测不到「守不守得住」。
+# 每次给出「机会」时附上这句追问，把用户推向 references/blue-ocean-methods.md。
+MOAT_PROMPT = (
+    "绿灯只说明「供给薄 + 有需求」，不说明你守得住。"
+    "追问一句：10 个人下周抄我，我靠什么还活着？"
+    "答不出 → 这是短期现金流，不是事业。见 references/blue-ocean-methods.md"
+)
+
+
 def decide(supply_thin, demand_str, deadly, supply_dims, n_dims):
     """裁决核心：纯函数，不依赖网络，便于回归测试。
 
@@ -301,7 +310,8 @@ def decide(supply_thin, demand_str, deadly, supply_dims, n_dims):
     demand_ok = demand_str is not None and demand_str >= 0.5
 
     if thin_ok and demand_ok:
-        verdict, kind, reason = "绿", "机会", "供给稀薄 + 需求存在"
+        verdict, kind = "绿", "机会"
+        reason = "供给稀薄 + 需求存在（**但这不等于蓝海**，见下方护城河追问）"
     elif thin_ok and not demand_ok:
         verdict, kind = "🟠", "无人区"
         reason = ("供给稀薄但需求信号弱 → 大概率是没人关心的领域。"
@@ -517,19 +527,29 @@ def render(r):
         for x in r["limits"]:
             L.append(f"      ! {x}")
     L.append("下一步  " + next_step(r))
+    if r.get("verdict_kind") == "机会":
+        L.append("")
+        L.append("护城河追问（工具测不到，必须你自己答）")
+        L.append("      " + MOAT_PROMPT)
     return "\n".join(L)
 
 
 def next_step(r):
-    v = r["verdict"]
-    if v == "绿":
+    """按裁决种类给下一步。
+
+    必须用 verdict_kind 而不是 verdict 字符串来判断——verdict 可能带
+    「(覆盖度低)」后缀，用 == 比较会把绿灯错判成红灯，给出完全相反的建议。
+    """
+    kind = r.get("verdict_kind", "")
+    if kind == "机会":
         return ("多源都指向供给稀薄，但这是意图数据不是成交数据。"
                 "去目标用户聚集地读真实抱怨，挂落地页收邮箱。")
-    if v == "黄":
-        return "换更窄的场景词重扫（'veterinary clinic scheduling' 而非 'scheduling'）。"
-    if v.startswith("黄"):
-        return "数据不完整，稍后重跑，不要在此结论上做决定。"
-    return "放弃。多个独立数据源都指向饱和，不要靠加功能挽救。"
+    if kind == "无人区":
+        return ("这是无人区不是机会：先证明有人要（找 5 个真实的人问），"
+                "再谈做产品。没有需求证据就不要投入。")
+    if kind == "红海":
+        return "放弃。多个独立数据源都指向饱和，不要靠加功能挽救。"
+    return "数据不完整，稍后重跑，不要在此结论上做决定。"
 
 
 def main():

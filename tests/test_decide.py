@@ -30,6 +30,32 @@ CASES = [
 ]
 
 
+# next_step 的建议必须与 verdict_kind 一致。
+# 这里锁住一个真实 bug：verdict 可能带 "(覆盖度低)" 后缀，
+# 若用 verdict == "绿" 判断，绿灯会拿到红灯的建议（"放弃"）。
+NEXT_CASES = [
+    ("机会", "落地页", "绿灯应引导去验证，不是放弃"),
+    ("无人区", "证明有人要", "无人区应引导去验证需求，不是做产品"),
+    ("红海", "放弃", "红海应直接劝退"),
+]
+
+
+def test_next_step():
+    bad = 0
+    for kind, must_contain, why in NEXT_CASES:
+        r = {"verdict": "绿(覆盖度低)", "verdict_kind": kind}
+        txt = g.next_step(r)
+        good = must_contain in txt
+        bad += not good
+        print(f"  {'✓' if good else '✗'} {kind:5} → {txt[:42]}  ({why})")
+    # 带后缀的绿灯不能再被判成放弃
+    r = {"verdict": "绿(覆盖度低)", "verdict_kind": "机会"}
+    if "放弃" in g.next_step(r):
+        print("  ✗ 带覆盖度后缀的绿灯被错判成『放弃』")
+        bad += 1
+    return bad
+
+
 def main():
     ok = 0
     for st, ds, deadly, nd, exp_v, exp_k, why in CASES:
@@ -41,7 +67,11 @@ def main():
         if not good:
             print(f"      期望 {exp_v}/{exp_k}，实际 {v}/{k}；理由：{reason}")
     print(f"\n  {ok}/{len(CASES)} 通过")
-    return 0 if ok == len(CASES) else 1
+    print("\n  next_step 建议一致性：")
+    bad = test_next_step()
+    total_ok = (ok == len(CASES)) and bad == 0
+    print(f"\n  {'全部通过' if total_ok else '有失败'}")
+    return 0 if total_ok else 1
 
 
 if __name__ == "__main__":
