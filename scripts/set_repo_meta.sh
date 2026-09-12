@@ -44,33 +44,49 @@ if [ -z "${GITHUB_TOKEN:-}" ]; then
   fi
 fi
 
-api() {  # method path json_body
-  curl -sS -X "$1" \
-    -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-    -H "Accept: application/vnd.github+json" \
-    -H "X-GitHub-Api-Version: 2022-11-28" \
-    "https://api.github.com/repos/${REPO}$2" \
-    ${3:+-d "$3"}
+api() {  # method path [json_body]
+  # 用数组拼参数，避免 ${3:+...} 在空值时产生多余参数
+  local args=(-sS -X "$1"
+    -H "Authorization: Bearer ${GITHUB_TOKEN}"
+    -H "Accept: application/vnd.github+json"
+    -H "X-GitHub-Api-Version: 2022-11-28")
+  [ -n "${3:-}" ] && args+=(-d "$3")
+  args+=("https://api.github.com/repos/${REPO}$2")
+  curl "${args[@]}"
 }
 
+# 用 argv 传值，不要用 `python3 -c ... NAME=value`——那种写法是把
+# NAME=value 当成了 python 的位置参数，不是环境变量，会抛 KeyError 且静默失败。
+DESC_JSON="$(python3 -c 'import json,sys; print(json.dumps({"description": sys.argv[1]}))' "$DESCRIPTION")"
+TOPICS_JSON="$(python3 -c 'import json,sys; print(json.dumps({"names": json.loads(sys.argv[1])}))' "$TOPICS")"
+
 echo "==> 写入 description"
-api PATCH "" "$(python3 -c '
-import json,os
-print(json.dumps({"description": os.environ["DESCRIPTION"]}))
-' DESCRIPTION="$DESCRIPTION")" >/dev/null
-
-echo "==> 写入 topics"
-api PUT /topics "$(python3 -c '
-import json,os
-print(json.dumps({"names": json.loads(os.environ["TOPICS"])}))
-' TOPICS="$TOPICS")" >/dev/null
-
-echo "==> 当前状态"
-api GET "" | python3 -c '
+resp="$(api PATCH "" "$DESC_JSON")"
+echo "$resp" | python3 -c '
 import json,sys
 d=json.load(sys.stdin)
-print("  仓库:      ", d.get("full_name"))
-print("  visibility:", d.get("visibility"))
+if "message" in d and "description" not in d:
+    print("  失败:", d["message"], file=sys.stderr); sys.exit(1)
+print("  description →", d.get("description"))
+' || exit 1
+
+echo "==> 写入 topics"
+resp="$(api PUT /topics "$TOPICS_JSON")"
+echo "$resp" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+if "message" in d and "names" not in d:
+    print("  失败:", d["message"], file=sys.stderr); sys.exit(1)
+print("  topics →", ", ".join(d.get("names") or []))
+' || exit 1
+
+echo "==> 复核（匿名读取，确认对公众可见）"
+curl -sS -H "Accept: application/vnd.github+json" \
+  "https://api.github.com/repos/${REPO}" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+print("  仓库:       ", d.get("full_name"))
+print("  visibility: ", d.get("visibility"))
 print("  description:", d.get("description"))
-print("  topics:    ", ", ".join(d.get("topics") or []) or "(空)")
+print("  topics:     ", ", ".join(d.get("topics") or []) or "(空)")
 '
