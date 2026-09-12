@@ -86,6 +86,30 @@ B2B_HINT = (r"clinic|practice|patient|invoice|invoicing|payroll|compliance|"
             r"inventory|dental|salon|restaurant|logistics|fleet|property|"
             r"legal|funeral|veterinary|medical|ehr|emr|crm|erp|wholesale")
 
+# 软件/工具形态的标志词。与 PHYSICAL_HINT 同时命中时，以「这是软件」为准——
+# 例如 "restaurant scheduling software" 里的 restaurant 只是行业限定词，
+# 用户要做的显然是软件，不是开餐厅。
+SOFTWARE_HINT = (
+    r"software|app|apps|application|system|systems|platform|tool|tools|saas|"
+    r"api|sdk|plugin|extension|dashboard|automation|crm|erp|pos|"
+    r"management system|booking system|scheduling|analytics|tracker|"
+    r"generator|calculator|converter|scanner|ocr|excel|spreadsheet|"
+    r"template|widget|bot|integration|database|website|web app|mobile app")
+
+# 实体产品 / 线下服务的标志词。
+# 这些品类的竞争格局不在 GitHub 也不在 App Store 上——工具的两个数据源
+# 都不代表它们。实测 "handmade soap business" 被判成「无人区」，
+# 还因为模糊匹配到 Etsy 而误报「已有 727 万条评价的既得利益者」。
+# 那是**自信的错误结论**，比"无法判断"危险得多，所以这里主动拒绝作答。
+PHYSICAL_HINT = (
+    r"handmade|hand-made|etsy|craft fair|soap|candle|jewel(?:lery|ry)|pottery|"
+    r"ceramic|knit|sewing|embroidery|leather|woodwork|furniture|clothing|"
+    r"apparel|t-shirt|merch|print on demand|dropship|wholesale|"
+    r"food truck|catering|bakery|coffee shop|restaurant|cleaning service|"
+    r"landscap|plumbing|hvac|roofing|moving company|photography studio|"
+    r"tutoring|childcare|daycare|pet grooming|hair salon|barber|massage|"
+    r"fitness studio|yoga studio|real estate agent|insurance agent")
+
 
 class FetchError(Exception):
     pass
@@ -121,6 +145,22 @@ def get_json(url, tries=3):
             last = FetchError(str(e)[:60])
             time.sleep(2)
     raise last
+
+
+def is_out_of_scope(kw):
+    """这个方向是否超出本工具的判断范围（实体产品 / 线下服务）。
+
+    抽成独立函数是为了让测试能调用**同一份**逻辑。曾经把判定抄进测试里，
+    结果 scan() 内遗留了一个无条件判断、把软件查询也拦掉时，测试依然全绿——
+    复制逻辑的测试会连 bug 的盲区一起复制。
+
+    规则：实体词命中 **且** 没有软件信号才算超范围。
+    实测教训："restaurant scheduling software" / "coffee shop pos system"
+    里的实体词只是行业限定语，用户要做的显然是软件。
+    """
+    physical = bool(re.search(PHYSICAL_HINT, kw, re.I))
+    software = bool(re.search(SOFTWARE_HINT, kw, re.I))
+    return physical and not software
 
 
 def tier_of(n, tiers):
@@ -208,24 +248,53 @@ def autocomplete(kw):
 EXCLUDED_GENRES = {"games"}
 
 
+# iTunes 的搜索是**模糊匹配**，会返回大量与查询无关的 App。
+# 实测：搜 "handmade soap business" 会返回 Etsy（7,275,714 条评价），
+# 因为苹果用 "handmade" 做了替换匹配。Etsy 与「手工皂生意」毫无关系，
+# 却会触发「不可撼动的既得利益者」否决项，把一个真实市场判成红海。
+#
+# 所以必须做相关性过滤：App 名称里至少要命中一个查询实词。
+def _relevant(app_name, kw):
+    toks = [t for t in re.findall(r"[a-z0-9]{4,}", kw.lower())
+            if t not in GENERIC_TAIL]
+    if not toks:                       # 查询全是通用词，无法判断，全部保留
+        return True
+    name = (app_name or "").lower()
+    return any(t in name for t in toks)
+
+
 def appstore(kw, country="us"):
     d = get_json("https://itunes.apple.com/search?term="
                  + urllib.parse.quote(kw)
                  + f"&entity=software&limit=25&country={country}")
     raw = d.get("results", [])
-    apps = [a for a in raw
+    kept = [a for a in raw
             if (a.get("primaryGenreName", "") or "").lower() not in EXCLUDED_GENRES]
-    ratings = [(a.get("userRatingCount", 0) or 0) for a in apps]
+    apps = [a for a in kept if _relevant(a.get("trackName", ""), kw)]
+    ratings = sorted(((a.get("userRatingCount", 0) or 0) for a in apps),
+                     reverse=True)
+    # 用 P75 而不是 max：一个离群 App（或一次模糊匹配的残留）不该单独决定裁决。
+    # 实测 "funeral home management" 的搜索顺序里混着 Find a Grave 等无关项，
+    # 单看 max 会把噪声当成市场头部。
+    def pct(vals, q):
+        if not vals:
+            return 0
+        return vals[min(len(vals) - 1, int(len(vals) * q))]
     return {
         "total": len(apps),
-        "excluded_games": len(raw) - len(apps),
-        "max_ratings": max(ratings) if ratings else 0,
+        "excluded_games": len(raw) - len(kept),
+        "excluded_irrelevant": len(kept) - len(apps),
+        "max_ratings": ratings[0] if ratings else 0,
+        "p75_ratings": pct(ratings, 0.25),   # 降序，前 25% 分位
         "sum_ratings": sum(ratings),
         "avg_rating": (sum(a.get("averageUserRating", 0) or 0 for a in apps)
                        / len(apps)) if apps else 0,
+        # 展示按评价数排序的前几名，而不是搜索顺序——后者常含无关项，
+        # 会让用户以为它们是头部
         "top": [(a.get("trackName", "")[:42],
                  round(a.get("averageUserRating", 0) or 0, 1),
-                 a.get("userRatingCount", 0) or 0) for a in apps[:5]],
+                 a.get("userRatingCount", 0) or 0)
+                for a in sorted(apps, key=lambda x: -(x.get("userRatingCount", 0) or 0))[:5]],
     }
 
 
@@ -355,11 +424,27 @@ def scan(kw, market="auto"):
             r[key] = {"error": str(e)[:50]}
         time.sleep(1.5)
     # 搜索结果只作参考展示，不参与评分：DDG/Startpage/Mojeek/searx 实测都会
-    # 限流，把它计入评分会让分数随搜素引擎的心情波动。
-    try:
-        r["web"] = web_serp(kw)
-    except Exception as e:                                   # noqa: BLE001
-        r["web"] = {"error": str(e)[:50]}
+    # 限流，把它计入评分会让分数随搜索引擎的心情波动。
+    # 另外：既然实体产品/线下服务方向最终会拒绝作答，就不必为它打这个
+    # 会退避重试（每次 8-12s）的源——那是纯粹的等待。
+    # 只有当查询「指向实体生意」而不是「指向软件」时才拒绝作答。
+    # 实测教训：起初只用 PHYSICAL_HINT 判断，结果把
+    # "restaurant scheduling software" / "coffee shop pos system" /
+    # "bakery inventory software" 这类明显的软件查询也拦掉了——
+    # 实体词只是行业限定语。所以必须有软件信号时优先按软件处理。
+    _out_of_scope = is_out_of_scope(kw)
+    if _out_of_scope:
+        r["web"] = {"skipped": "超出适用范围，跳过搜索结果采集"}
+    else:
+        try:
+            r["web"] = web_serp(kw)
+        except Exception as e:                               # noqa: BLE001
+            r["web"] = {"error": str(e)[:50]}
+
+    # 供给档位在数据收集阶段就算出来，供展示与提前返回的路径共用
+    _gh = r.get("github") or {}
+    if "total" in _gh:
+        r["gh_tier"] = tier_of(_gh["total"], GH_TIERS)[0]
 
     # ── 市场类型判定 ────────────────────────────────────
     is_b2b = bool(re.search(B2B_HINT, kw, re.I))
@@ -367,6 +452,31 @@ def scan(kw, market="auto"):
         market = "business" if is_b2b else "consumer"
     r["market"] = market
     r["is_b2b_guess"] = is_b2b
+
+    # 数据源适用性检查：实体产品与线下服务的竞争格局不在本工具的数据源里。
+    # 宁可拒绝作答，也不要给一个自信的错误裁决。
+    # 必须复用上面算好的 _is_physical/_is_software——这里曾遗留一个无条件
+    # 的 PHYSICAL_HINT 判断，把 "restaurant scheduling software" 这类
+    # 明显是软件的查询也拦掉了。
+    if _out_of_scope:
+        r["dimensions"] = []
+        r["supply_thin"] = r["demand_str"] = None
+        r["score"] = 0
+        r["verdict"], r["verdict_kind"] = "⚪ 不适用", "超出适用范围"
+        r["verdict_reason"] = (
+            "这个方向看起来是实体产品或线下服务，它的竞争格局既不在 GitHub "
+            "也不在 App Store 上——本工具的两个数据源都不代表它。"
+            "给结论会是自信的错误，所以不判。")
+        r["deadly"] = []
+        r["evidence"] = []
+        r["limits"].append(
+            "若你想做的其实是「给这个行业做软件」（例如婚礼摄影工作室用的排期工具），"
+            "请把查询改成工具本身，例如 'wedding photography scheduling software'。")
+        r["limits"].append(
+            "若你想评估的是实体生意本身，本工具帮不上。可用的人工路径："
+            "在 Etsy/亚马逊搜同类卖家数量与销量、看批发平台同类供应量、"
+            "或在本地实地数竞争对手。")
+        return r
 
     # ── 评分：按维度分别打薄分，最后取平均 ──────────────
     #
@@ -382,7 +492,6 @@ def scan(kw, market="auto"):
     gh = r.get("github") or {}
     if "total" in gh:
         label, pts = tier_of(gh["total"], GH_TIERS)
-        r["gh_tier"] = label
         dims.append(("开发者供给", pts, 3))
         if gh["total"] < 300:
             r["evidence"].append(f"GitHub 仅 {gh['total']} 仓库 → 开发者侧几乎无人做")
@@ -397,17 +506,27 @@ def scan(kw, market="auto"):
     # ② 消费供给（仅消费级市场）
     ap = r.get("appstore") or {}
     if "max_ratings" in ap:
-        if market == "consumer":
-            label, pts = tier_of(ap["max_ratings"], APP_TIERS)
+        if market == "consumer" and ap["total"] < 3:
+            # 样本太少时这个维度不可信：相关 App 不足 3 个，P75 就等于某一个
+            # App 的评价数（实测 "vet clinic software" 只留下 1 款，
+            # 那 33,992 条评价会独自决定整个消费供给维度）。
+            # 宁可标为「不可用」，也不要让单个样本冒充市场信号。
+            r["limits"].append(
+                f"App Store 相关结果仅 {ap['total']} 款，样本不足 → "
+                f"消费供给维度未计入评分")
+        elif market == "consumer":
+            # 用 P75 判垄断：单个离群 App 不足以构成「既得利益者」
+            metric = ap.get("p75_ratings", ap["max_ratings"])
+            label, pts = tier_of(metric, APP_TIERS)
             r["app_tier"] = label
             dims.append(("消费供给", pts, 3))
-            if ap["max_ratings"] >= APP_MONOPOLY:
+            if metric >= APP_MONOPOLY:
                 r["deadly"].append(
-                    f"App Store 头部 {ap['max_ratings']:,} 条评价 → "
+                    f"App Store 同类头部（P75）{metric:,} 条评价 → "
                     f"已有不可撼动的既得利益者，且是免费产品")
-            elif ap["max_ratings"] < 2000:
+            elif metric < 2000:
                 r["evidence"].append(
-                    f"App Store 头部仅 {ap['max_ratings']:,} 条评价 → "
+                    f"App Store 头部（P75）仅 {metric:,} 条评价 → "
                     f"没有强势消费级产品")
             if ap["avg_rating"] and ap["avg_rating"] < 3.6 and ap["total"] >= 8:
                 r["evidence"].append(
@@ -541,6 +660,9 @@ def next_step(r):
     「(覆盖度低)」后缀，用 == 比较会把绿灯错判成红灯，给出完全相反的建议。
     """
     kind = r.get("verdict_kind", "")
+    if kind == "超出适用范围":
+        return ("本工具判不了这个方向——数据源不对口。"
+                "要么把查询改成这个行业用的**软件**，要么改用人工方式评估实体生意。")
     if kind == "机会":
         return ("多源都指向供给稀薄，但这是意图数据不是成交数据。"
                 "去目标用户聚集地读真实抱怨，挂落地页收邮箱。")
