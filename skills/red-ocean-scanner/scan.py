@@ -90,9 +90,42 @@ def main():
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--list-engines", action="store_true")
     ap.add_argument("--list-modes", action="store_true")
+    ap.add_argument("--cache-stats", action="store_true",
+                    help="显示缓存占用；缓存用于避免重复请求、降低限流风险")
+    ap.add_argument("--clear-cache", action="store_true", help="清空缓存")
     # REMAINDER：关键词与其后的目标脚本专属选项原样接收，不猜测切分
     ap.add_argument("rest", nargs=argparse.REMAINDER)
     a = ap.parse_args()
+
+    if a.cache_stats or a.clear_cache:
+        sys.path.insert(0, HERE)
+        import _http
+        import collections
+        if a.clear_cache:
+            _http.cache_clear()
+            print("缓存已清空")
+            return 0
+        n, sz = _http.cache_stats()
+        print(f"缓存目录: {_http.CACHE_DIR}")
+        print(f"条目数:   {n}")
+        print(f"占用:     {sz/1024:.1f} KB")
+        if n:
+            c = collections.Counter()
+            for root, _, fs in os.walk(_http.CACHE_DIR):
+                for f in fs:
+                    if f.endswith(".json"):
+                        c[os.path.basename(root)] += 1
+            print("按源分布:")
+            for k, v in sorted(c.items(), key=lambda x: -x[1]):
+                print(f"  {k:14} {v}")
+            print("\n各源缓存时长:")
+            for k, v in _http.TTL.items():
+                if v > 3600:
+                    print(f"  {k:14} {v/3600:.0f} 小时")
+                else:
+                    print(f"  {k:14} {v} 秒")
+        print(f"\n关闭缓存: export RED_OCEAN_NO_CACHE=1")
+        return 0
 
     if a.list_engines:
         print("可用市场引擎（--engine）：\n")

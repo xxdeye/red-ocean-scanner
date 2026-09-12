@@ -22,6 +22,7 @@
 import argparse
 import html
 import json
+import os
 import re
 import sys
 import time
@@ -60,25 +61,22 @@ TITLE_SIGNALS = [
 ]
 
 
-class RateLimited(Exception):
-    """被搜狗风控拦截，必须与「没有数据」严格区分。"""
+# HTTP 层统一交给 _http：磁盘缓存 + 主动限流。
+# 中文源实测边界：360 与搜狗都不给 Retry-After，但搜狗在 2s 间隔下
+# 连打 6+ 次无碍；搜狗被限流时返回**空页面而非报错**，所以必须把
+# 「空响应」当限流处理，绝不能读成「存量 0 篇」。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _http  # noqa: E402
+
+RateLimited = _http.RateLimited
 
 
 def fetch(url, tries=3, backoff=25):
-    last = None
-    for i in range(tries):
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": UA})
-            with urllib.request.urlopen(req, timeout=20) as r:
-                body = r.read().decode("utf-8", "ignore")
-            if body and len(body) > 500:
-                return body
-            last = RateLimited("响应为空")
-        except Exception as e:                      # noqa: BLE001
-            last = e
-        if i < tries - 1:
-            time.sleep(backoff * (i + 1))
-    raise last
+    body = _http.fetch(url, timeout=20, tries=tries, backoff=backoff)
+    if not body or len(body) <= 500:
+        # 搜狗风控页很短。视为限流而不是「没有数据」。
+        raise RateLimited("响应为空或过短，疑似风控")
+    return body
 
 
 def tier(n):

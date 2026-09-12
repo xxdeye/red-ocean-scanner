@@ -111,40 +111,71 @@ PHYSICAL_HINT = (
     r"fitness studio|yoga studio|real estate agent|insurance agent")
 
 
-class FetchError(Exception):
-    pass
+# HTTP 层统一交给 _http：磁盘缓存 + 主动限流 + 跨进程配额持久化。
+# 见 _http.py 顶部注释——实测 GitHub search 是硬性 10 次/分钟且不给
+# Retry-After，DDG HTML 第 3 次起必拦，所以必须主动读 header 等待，
+# 而不是撞了 403 再退避。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _http  # noqa: E402
+
+FetchError = _http.FetchError
+RateLimited = _http.RateLimited
 
 
-class RateLimited(FetchError):
-    pass
+def get(url, timeout=20):
+    return _http.fetch(url, timeout=timeout)
 
 
-def get(url, timeout=15):
-    h = {"User-Agent": UA, "Accept-Language": "en-US,en;q=0.9",
-         "Accept": "application/json, text/html;q=0.9, */*;q=0.8"}
-    if GH_TOKEN and "api.github.com" in url:
-        h["Authorization"] = f"Bearer {GH_TOKEN}"
-    req = urllib.request.Request(url, headers=h)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read().decode("utf-8", "ignore")
+def get_json(url, tries=2):
+    return json.loads(_http.fetch(url, tries=tries))
 
 
-def get_json(url, tries=3):
-    last = None
-    for i in range(tries):
-        try:
-            return json.loads(get(url))
-        except urllib.error.HTTPError as e:
-            if e.code in (403, 429) and "api.github.com" in url:
-                last = RateLimited(f"HTTP {e.code} 限流")
-                time.sleep(20 * (i + 1))
-                continue
-            last = FetchError(f"HTTP {e.code}")
-            break
-        except Exception as e:                              # noqa: BLE001
-            last = FetchError(str(e)[:60])
-            time.sleep(2)
-    raise last
+def decide(supply_thin, demand_str, deadly, supply_dims, n_dims):
+    """裁决核心：纯函数，不依赖网络，便于回归测试。
+
+    返回 (verdict, kind, reason)。
+
+    顺序很重要：先算矩阵，再让否决项生效。矩阵能区分「无人区」（没人要）
+    和「红海」（打不过），如果在矩阵之前就因否决项返回「红」，会把无人区
+    误报成红海——两者的应对完全不同。
+    """
+    thin_ok = supply_thin is not None and supply_thin >= 0.5
+    demand_ok = demand_str is not None and demand_str >= 0.5
+
+    if thin_ok and demand_ok:
+        verdict, kind = "绿", "机会"
+        reason = "供给稀薄 + 需求存在（**但这不等于蓝海**，见下方护城河追问）"
+    elif thin_ok and not demand_ok:
+        verdict, kind = "🟠", "无人区"
+        reason = ("供给稀薄但需求信号弱 → 大概率是没人关心的领域。"
+                  "**低竞争在这里等于没市场**")
+    else:
+        verdict, kind = "红", "红海"
+        reason = ("需求旺但供给厚 → 已被认领" if demand_ok
+                  else "供给厚且需求弱 → 没有进入理由")
+        if supply_thin is not None and supply_thin < 1.0 and supply_dims:
+            worst = min(supply_dims, key=lambda x: x[1] / x[2])
+            reason += f"（主因：{worst[0]}）"
+
+    # 否决项只在矩阵给出「机会」时一票否决。矩阵说红海时它是冗余信息；
+    # 矩阵说无人区时，「没有市场」比「有既得利益者」更准确地描述问题。
+    if deadly and verdict == "绿":
+        verdict, kind = "红", "红海"
+        reason = "矩阵指向机会，但有硬性否决项 → " + deadly[0]
+    elif deadly and verdict == "🟠":
+        reason += "（另有否决项：" + deadly[0] + "）"
+
+    if n_dims < 3:
+        verdict += "(覆盖度低)"
+        reason += f"；仅测到 {n_dims} 个维度，把握有限"
+    return verdict, kind, reason
+
+
+MOAT_PROMPT = (
+    "绿灯只说明「供给薄 + 有需求」，不说明你守得住。"
+    "追问一句：10 个人下周抄我，我靠什么还活着？"
+    "答不出 → 这是短期现金流，不是事业。见 references/blue-ocean-methods.md"
+)
 
 
 def is_out_of_scope(kw):
@@ -323,88 +354,36 @@ REVIEW_SITES = (r"g2\.com|capterra|getapp|softwareadvice|trustradius|"
 PRICE_WORDS = r"pricing|price|plans|free trial|demo|buy|cost|quote"
 
 
-def web_serp(kw, tries=3):
-    """返回评测站密度与定价信号。限流时抛异常，绝不返回 0 伪装成「没有」。"""
-    last = None
-    for i in range(tries):
-        try:
-            h = get("https://html.duckduckgo.com/html/?q="
-                    + urllib.parse.quote(kw))
-        except Exception as e:                               # noqa: BLE001
-            last = FetchError(str(e)[:50])
-            time.sleep(8 * (i + 1))
-            continue
-        if DDG_BLOCK.search(h) or len(h) < 5000:
-            last = RateLimited("DDG 限流（anomaly 页）")
-            time.sleep(12 * (i + 1))
-            continue
-        titles = [re.sub(r"<[^>]+>", "", t).strip()
-                  for t in re.findall(r'class="result__a"[^>]*>(.*?)</a>', h, re.S)]
-        titles = [t for t in titles if t]
-        domains = [d.strip() for d in
-                   re.findall(r'class="result__url"[^>]*>\s*(.*?)\s*<', h, re.S)]
-        if not titles:
-            last = FetchError("页面无结果条目（结构可能变了）")
-            continue
-        return {
-            "results": len(titles),
-            "review_sites": sum(1 for d in domains
-                                if re.search(REVIEW_SITES, d, re.I)),
-            "pricing_signals": sum(1 for t in titles
-                                   if re.search(PRICE_WORDS, t, re.I)),
-            "top": titles[:5],
-        }
-    raise last
+def web_serp(kw):
+    """搜索结果信号，**仅作参考、不参与评分**。
 
-
-# 绿灯不等于蓝海：工具只测「有没有人在做」，测不到「守不守得住」。
-# 每次给出「机会」时附上这句追问，把用户推向 references/blue-ocean-methods.md。
-MOAT_PROMPT = (
-    "绿灯只说明「供给薄 + 有需求」，不说明你守得住。"
-    "追问一句：10 个人下周抄我，我靠什么还活着？"
-    "答不出 → 这是短期现金流，不是事业。见 references/blue-ocean-methods.md"
-)
-
-
-def decide(supply_thin, demand_str, deadly, supply_dims, n_dims):
-    """裁决核心：纯函数，不依赖网络，便于回归测试。
-
-    返回 (verdict, kind, reason)。
-
-    顺序很重要：先算矩阵，再让否决项生效。矩阵能区分「无人区」（没人要）
-    和「红海」（打不过），如果在矩阵之前就因否决项返回「红」，会把无人区
-    误报成红海——两者的应对完全不同。
+    实测 DDG HTML 在第 3 次请求起必然返回 anomaly 页，且不给 Retry-After。
+    既然这个维度不计分，就**不做退避重试**——原来固定重试 3 次、每次退避
+    8-12s，等于为一个不参与判定的维度白等 36 秒。
+    改为单次尝试 + 24 小时缓存，失败就明确标记为不可用。
     """
-    thin_ok = supply_thin is not None and supply_thin >= 0.5
-    demand_ok = demand_str is not None and demand_str >= 0.5
-
-    if thin_ok and demand_ok:
-        verdict, kind = "绿", "机会"
-        reason = "供给稀薄 + 需求存在（**但这不等于蓝海**，见下方护城河追问）"
-    elif thin_ok and not demand_ok:
-        verdict, kind = "🟠", "无人区"
-        reason = ("供给稀薄但需求信号弱 → 大概率是没人关心的领域。"
-                  "**低竞争在这里等于没市场**")
-    else:
-        verdict, kind = "红", "红海"
-        reason = ("需求旺但供给厚 → 已被认领" if demand_ok
-                  else "供给厚且需求弱 → 没有进入理由")
-        if supply_thin is not None and supply_thin < 1.0 and supply_dims:
-            worst = min(supply_dims, key=lambda x: x[1] / x[2])
-            reason += f"（主因：{worst[0]}）"
-
-    # 否决项只在矩阵给出「机会」时一票否决。矩阵说红海时它是冗余信息；
-    # 矩阵说无人区时，「没有市场」比「有既得利益者」更准确地描述问题。
-    if deadly and verdict == "绿":
-        verdict, kind = "红", "红海"
-        reason = "矩阵指向机会，但有硬性否决项 → " + deadly[0]
-    elif deadly and verdict == "🟠":
-        reason += "（另有否决项：" + deadly[0] + "）"
-
-    if n_dims < 3:
-        verdict += "(覆盖度低)"
-        reason += f"；仅测到 {n_dims} 个维度，把握有限"
-    return verdict, kind, reason
+    try:
+        h = _http.fetch("https://html.duckduckgo.com/html/?q="
+                        + urllib.parse.quote(kw), timeout=12, tries=1)
+    except Exception as e:                                   # noqa: BLE001
+        return {"error": f"{str(e)[:40]}（该维度不计分，忽略即可）"}
+    if DDG_BLOCK.search(h) or len(h) < 5000:
+        return {"error": "DDG 限流（该维度不计分，忽略即可）"}
+    titles = [re.sub(r"<[^>]+>", "", t).strip()
+              for t in re.findall(r'class="result__a"[^>]*>(.*?)</a>', h, re.S)]
+    titles = [t for t in titles if t]
+    if not titles:
+        return {"error": "页面无结果条目（结构可能变了，该维度不计分）"}
+    domains = [d.strip() for d in
+               re.findall(r'class="result__url"[^>]*>\s*(.*?)\s*<', h, re.S)]
+    return {
+        "results": len(titles),
+        "review_sites": sum(1 for d in domains
+                            if re.search(REVIEW_SITES, d, re.I)),
+        "pricing_signals": sum(1 for t in titles
+                               if re.search(PRICE_WORDS, t, re.I)),
+        "top": titles[:5],
+    }
 
 
 def scan(kw, market="auto"):
@@ -422,7 +401,10 @@ def scan(kw, market="auto"):
             r[key] = fn(kw)
         except Exception as e:                               # noqa: BLE001
             r[key] = {"error": str(e)[:50]}
-        time.sleep(1.5)
+        # 间隔只在未命中缓存、真的打了网络请求时才需要——命中缓存时纯属白等。
+        # GitHub 的主动限流由 _http.github_gate() 负责，这里不重复实现。
+        if _http.last_was_network:
+            time.sleep(1.0)
     # 搜索结果只作参考展示，不参与评分：DDG/Startpage/Mojeek/searx 实测都会
     # 限流，把它计入评分会让分数随搜索引擎的心情波动。
     # 另外：既然实体产品/线下服务方向最终会拒绝作答，就不必为它打这个

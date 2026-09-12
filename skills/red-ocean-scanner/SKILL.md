@@ -2,10 +2,10 @@
 name: red-ocean-scanner
 description: "Red Ocean Scanner / 避红海扫描器。在动手做产品之前，用实测数据判断一个方向 该不该做，出红/黄/绿裁决而不是靠感觉。 核心判据是「供给薄度 × 需求强度」两个独立维度：供给薄但没需求是无人区， 供给厚但有需求是红海，两者都不是机会。 三种模式：scan 出裁决 / ladder 把宽词收窄成窄口 / geo 找竞争真空的国家。 两个引擎：全球（App Store 评价数 + GitHub 仓库密度 + Google/Bing 自动补全） 与中文（微信内容存量 + 360 相关搜索），按市场分别校准，并自动区分消费级与 B2B。 触发场景：选品、判断红海还是蓝海、验证需求是否值得投入、关键词竞争调研、 出海找市场、排查「看着有机会其实是坑」的方向。 触发词：红海、蓝海、避红海、选品、需求分析、这个方向能不能做、竞争大不大、 有没有人做、值不值得做、关键词验证、副业方向、独立产品选品、出海、地理套利、 red ocean, blue ocean, niche validation, market saturation, competitor research, is this market saturated, validate my idea, indie hacker, app store competition, ASO research, find an underserved market. 不适用：需要支付数据或用户访谈才能回答的问题（本工具只测供给与搜索意图， 不证明有人付过钱）；非英文/中文的市场。"
 license: MIT
-compatibility: "需要 Python 3.8+ 与出网访问（GitHub / iTunes / Google·Bing 自动补全 / 360 / 搜狗微信）。 无需 pip install，无 API key。设 GITHUB_TOKEN 可把 GitHub 限流从 10 次/分提到 30 次/分。 部分数据源（Reddit / Product Hunt / G2 / Capterra）在多数网络下返回 403，属预期。"
+compatibility: "需要 Python 3.8+ 与出网访问（GitHub / iTunes / Google·Bing 自动补全 / 360 / 搜狗微信）。 无需 pip install，无 API key。设 GITHUB_TOKEN 可把 GitHub 限流从 10 次/分提到 30 次/分；自带磁盘缓存以降请求量。 部分数据源（Reddit / Product Hunt / G2 / Capterra）在多数网络下返回 403，属预期。"
 metadata:
   author: xxdeye
-  version: "1.2.0"
+  version: "1.3.0"
   repository: https://github.com/xxdeye/red-ocean-scanner
   references: references/data-sources.md, references/calibration.md, references/blue-ocean-methods.md
 ---
@@ -56,7 +56,7 @@ python3 scan.py --list-engines
 | `cn` | 中文 | 微信内容存量 + 360 相关搜索 |
 
 全球引擎自动判断**消费级**还是 **B2B**，也可用 `--market` 手动指定。
-设 `GITHUB_TOKEN` 可把 GitHub 冷却从 22s 降到 7s。纯标准库，无需 API key。
+带磁盘缓存与配额主动等待（冷/热 12.3s vs 0.08s）。`--cache-stats`；`GITHUB_TOKEN` 提速 3 倍。
 
 ---
 
@@ -72,8 +72,8 @@ python3 scan.py --list-engines
 | **供给薄** | 🟢 **机会** | 🟠 **无人区**（别做） |
 | **供给厚** | 🔴 **红海** | 🔴 **红海** |
 
-**🟠 无人区是最容易上当的一格。** 多数选品建议只说「找竞争少的地方」，
-但供给少有两种相反原因：没人做，和没人要。只看供给会把「没人要」当「没人做」。
+**🟠 无人区是最容易上当的一格。** 供给少有两种相反原因：没人做，和没人要。
+只看供给会把「没人要」当「没人做」。
 
 ### 裁决优先级与覆盖度
 
