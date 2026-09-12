@@ -28,6 +28,17 @@ import time
 import urllib.parse
 import urllib.request
 
+
+# ── 跨平台 UTF-8 ────────────────────────────────────────────
+# 脚本输出含中文与 emoji，Windows 默认 cp1252 控制台会直接抛
+# UnicodeEncodeError。在任何输出发生前把流切到 UTF-8。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, ValueError):   # 非 TTY 或被重定向的旧环境
+    pass
+
+
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120 Safari/537.36")
 
@@ -257,12 +268,14 @@ def main():
     ap.add_argument("keywords", nargs="+")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--report", metavar="FILE")
+    ap.add_argument("--gap", type=float, default=6.0,
+                    help="词间冷却秒数（被统一入口调用时由调度器覆盖）")
     a = ap.parse_args()
 
     results = []
     for i, kw in enumerate(a.keywords):
         if i:
-            time.sleep(6)          # 词间冷却，降低触发风控概率
+            time.sleep(a.gap)      # 词间冷却，降低触发风控概率
         results.append(scan(kw))
 
     if a.json:
