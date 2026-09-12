@@ -35,19 +35,19 @@ except (AttributeError, ValueError):   # 非 TTY 或被重定向的旧环境
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-# 每个引擎词间冷却不同，因为限流规则不同：
-#   全球版每次打 2 个 GitHub 端点，未授权限流约 10 次/分钟 → 22s
-#   中文版每次打 2 个源（360 + 搜狗微信），搜狗风控严格 → 6s 起步但易触发
+# 词间冷却由各引擎自己决定，调度器不覆盖——否则会压掉引擎内部的自适应逻辑
+# （例如检测到 GITHUB_TOKEN 就把冷却从 22s 降到 7s）。
+# 设 RED_OCEAN_GAP 可强制覆盖，仅用于调试。
+GAP_OVERRIDE = os.environ.get("RED_OCEAN_GAP", "")
+
 ENGINES = {
     "global": {
         "script": "global_scan.py",
-        "gap": "22",
         "desc": "全球/英文市场 — GitHub 仓库密度 + star 分布",
         "market": "global",
     },
     "cn": {
         "script": "red_ocean_scan.py",
-        "gap": "6",
         "desc": "中文市场 — 微信内容存量 + 360 相关搜索",
         "market": "cn",
     },
@@ -60,7 +60,10 @@ def run(engine, keywords, extra):
     if not os.path.exists(path):
         print(f"引擎脚本缺失: {path}", file=sys.stderr)
         return 1
-    cmd = [sys.executable, path, "--gap", cfg["gap"]] + extra + list(keywords)
+    cmd = [sys.executable, path]
+    if GAP_OVERRIDE:
+        cmd += ["--gap", GAP_OVERRIDE]
+    cmd += extra + list(keywords)
     return subprocess.call(cmd)
 
 

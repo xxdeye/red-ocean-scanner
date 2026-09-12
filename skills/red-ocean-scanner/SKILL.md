@@ -44,7 +44,11 @@ python3 scan.py --list-engines
 | `cn` | 中文 | 微信内容存量 + 360 相关搜索 | 搜索意图视角 |
 
 也可以直接调用底层脚本（`global_scan.py` / `red_ocean_scan.py`）。
-统一入口会自动注入正确的词间冷却，**推荐始终用 `scan.py`**。
+统一入口会自动用各引擎自己的冷却策略，**推荐始终用 `scan.py`**。
+
+**可选提速**：设置 `GITHUB_TOKEN`（或 `GH_TOKEN`）环境变量后，全球引擎的
+GitHub 限流从 10 次/分钟提升到 30 次/分钟，词间冷却自动从 22s 降到 7s，
+不需要改任何代码。中文引擎不受影响。
 
 纯 Python 3.8+ 标准库，**无需 pip install，不需要 API key**。
 

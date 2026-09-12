@@ -33,6 +33,7 @@
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -54,9 +55,12 @@ except (AttributeError, ValueError):   # 非 TTY 或被重定向的旧环境
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120 Safari/537.36")
 
-# GitHub 未授权搜索限流约 10 次/分钟。每次扫描打 2 个端点，词间冷却 22s。
+# GitHub 搜索限流：未授权 10 次/分钟，带 token 30 次/分钟。
+# 每次扫描打 2 个端点，所以两者词间冷却差 3 倍。
+# 设置 GITHUB_TOKEN 或 GH_TOKEN 环境变量即可自动提速，不需要改代码。
+GH_TOKEN = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or ""
 GH_GAP = 2.5
-KW_GAP = 22.0
+KW_GAP = 7.0 if GH_TOKEN else 22.0
 
 # 供给分档：用真实采样校准
 #   todo list app 90582 / habit tracker 60478 / invoice excel 2262
@@ -85,8 +89,10 @@ def get_json(url, tries=3):
     last = None
     for i in range(tries):
         try:
-            req = urllib.request.Request(
-                url, headers={"User-Agent": UA, "Accept": "application/json"})
+            hdrs = {"User-Agent": UA, "Accept": "application/json"}
+            if GH_TOKEN:
+                hdrs["Authorization"] = f"Bearer {GH_TOKEN}"
+            req = urllib.request.Request(url, headers=hdrs)
             with urllib.request.urlopen(req, timeout=20) as r:
                 return json.loads(r.read().decode("utf-8", "ignore"))
         except urllib.error.HTTPError as e:

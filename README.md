@@ -80,8 +80,21 @@ python3 scan.py --engine both "invoice excel"
 python3 scan.py --engine global --json "habit tracker"
 ```
 
-The unified entry point injects the correct cooldown per engine — **always prefer
-`scan.py`** over calling the engine scripts directly.
+The unified entry point routes to the right engine — **always prefer `scan.py`** over
+calling the engine scripts directly.
+
+### Speed it up with a GitHub token (optional)
+
+The global engine hits GitHub's search API, which allows **10 requests/min
+unauthenticated but 30/min with a token**. The scanner detects a token
+automatically and cuts the cooldown from 22s to 7s per keyword — no config needed:
+
+```bash
+export GITHUB_TOKEN=ghp_your_token_here   # or GH_TOKEN
+python3 scan.py -e global "keyword1" "keyword2" "keyword3"
+```
+
+Without a token it still works, just slower. The Chinese engine is unaffected.
 
 ## Example output
 
@@ -168,8 +181,9 @@ demoted to "reference only" and never scored.
   prove anyone has ever paid. That last step is manual and mandatory: Chinese market
   → search Xianyu (闲鱼) for real completed sales; global market → check pricing
   pages and review sites.
-- **Rate limited.** GitHub unauthenticated search ≈10 req/min (22s cooldown);
-  Sogou WeChat ≈45s recovery. Run few keywords at a time.
+- **Rate limited.** GitHub search ≈10 req/min unauthenticated, 30/min with a
+  token (set `GITHUB_TOKEN` to speed up ~3x); Sogou WeChat ≈45s recovery.
+  Run few keywords at a time.
 - **Fuzzy search is fuzzy.** Ambiguous keywords produce garbage in any search API.
   Use specific multi-word phrases (`veterinary clinic scheduling`, not `scheduling`).
 - Not financial or legal advice.
@@ -215,6 +229,7 @@ MIT
 ```bash
 cd skills/red-ocean-scanner
 
+export GITHUB_TOKEN=ghp_xxx                                   # 可选，提速 3 倍
 python3 scan.py --engine global "veterinary clinic software"   # 全球市场
 python3 scan.py --engine cn     "代账公司对账单"                  # 中文市场
 python3 scan.py --engine both   "invoice excel"                 # 双市场对比
