@@ -87,6 +87,163 @@ python3 scan.py --engine global --json "habit tracker"
 The unified entry point routes to the right engine — **always prefer `scan.py`** over
 calling the engine scripts directly.
 
+---
+
+## How to actually use this to avoid red oceans
+
+This is the part that matters. Three tools, used in order.
+
+### The one rule that changes everything
+
+**A red ocean is a property of a *word*, not of a *need*.**
+
+`invoice app` → 17,249 GitHub repos (bloodbath).
+`invoice export` → 1,826 repos. Same need. One-tenth the battlefield.
+
+So don't ask *"is this market saturated?"* Ask *"is this keyword saturated?"*
+Then change the keyword.
+
+### Step 1 — Find the narrow gate (`--mode ladder`)
+
+Feed it your broad idea. It generates narrower variants two ways: modifier
+templates (`for teachers`, `template`, `export`) and — more valuable — **real
+autocomplete queries**, which are narrow gates that provably exist.
+
+```bash
+cd skills/red-ocean-scanner
+python3 scan.py --mode ladder "invoice" --limit 8
+```
+
+Real output:
+
+```
+原词：145,975 个 GitHub 仓库 [红海]（测了 8/8 个变体）
+
+变体                                          仓库数  档位    比原词窄
+invoice for nonprofits                            3  极低  48658.3x
+invoice for teachers                             22  极低   6635.2x
+invoice for landlords                            24  极低   6082.3x
+invoice for clinics                              92  极低   1586.7x
+invoice for contractors                         172  极低    848.7x
+```
+
+**Read it like this:** the broad word is a red ocean; the narrow gates are not.
+That 48,658x is not a typo — it's the difference between "an invoicing app" and
+"invoicing for nonprofits."
+
+Cost: ~12s per variant (GitHub rate limit). Cap it with `--limit`.
+
+### Step 2 — Get a verdict on your top 2–3 gates (`scan.py`)
+
+```bash
+python3 scan.py -e global "invoice for nonprofits"
+```
+
+The global engine measures three independent things:
+
+| Signal | Source | What it catches |
+|---|---|---|
+| Consumer supply | App Store rating counts | A free incumbent with 7.6M reviews |
+| Developer supply | GitHub repo count + stars | 90,000 repos and a 14k-star leader |
+| Demand | Google + Bing + DDG autocomplete | Whether anyone is searching at all |
+
+**Blockers override the score.** A direction with a 7.6M-review free competitor
+is red even if everything else looks good — verdict precedence is
+`incomplete data > blocker > score`.
+
+### Step 3 — Check geographic arbitrage (`--mode geo`)
+
+Same need, different country, completely different competition. Measured:
+
+| Region | `invoice` top app | `receipt scanner` top app |
+|---|---|---|
+| US | 265,331 ratings | 7,642,608 |
+| China | **193** | 18,311 |
+| Brazil | 3,458 | 47,821 |
+
+```bash
+python3 scan.py --mode geo "receipt scanner" --regions us,gb,de,jp,cn,br
+```
+
+**Critical detail: it normalizes against each region's own app ecosystem.**
+Absolute numbers lie in both directions — they make a normal category in a small
+market look like an opportunity, and a genuine gap in a big market look like no
+market at all. The tool divides by a local baseline (top apps in that region).
+
+This caught a real false positive during development: `todo list app` in Brazil
+looked like a 29x arbitrage on raw numbers, but Brazil's top todo app has 34,919
+ratings — a served market. Normalized, the gap is 14x, not 29x.
+
+**Then ask why the gap exists.** The barrier *is* the reason it's unclaimed, and
+it's also your cost of entry: language, payments, tax rules, local channels.
+
+### Step 4 — Verify someone actually pays (manual, non-negotiable)
+
+Every step above measures **intent**, not **money**. Do not skip this:
+
+- **Chinese market** → search Xianyu (闲鱼) for the keyword. Real completed sales.
+- **Global market** → check pricing pages and review sites. A paid tier with
+  customers is the proof.
+
+Someone selling with real sales → build. Nobody selling → suspicion, not
+opportunity.
+
+### Worked example
+
+Starting from a deliberately terrible idea: *"I'll build an invoicing app."*
+
+```
+1. scan.py --mode ladder "invoice"
+   → 145,975 repos. Red ocean. But "invoice for nonprofits" = 3 repos.
+
+2. scan.py --engine global "invoice for nonprofits"
+   → check App Store + GitHub + demand. (Do not skip — 3 repos
+     could mean "untapped" or "nobody wants this.")
+
+3. scan.py --mode geo "invoice"
+   → US saturated (265k), China 193. If you can serve China, the
+     barrier is localization — know what it costs before you commit.
+
+4. Xianyu / pricing pages
+   → is anyone paying for nonprofit invoicing? This is the only step
+     that proves money changes hands.
+```
+
+### What each tool answers
+
+| Question | Command |
+|---|---|
+| Is this word a red ocean? | `scan.py` (default mode) |
+| What's a narrower word that isn't? | `scan.py --mode ladder` |
+| Where in the world is it not saturated? | `scan.py --mode geo` |
+| Will anyone pay? | You. Manually. |
+
+All three run through one entry point:
+
+```bash
+python3 scan.py --mode scan   --engine global "invoice for nonprofits"
+python3 scan.py --mode ladder "invoice" --limit 8
+python3 scan.py --mode geo    "receipt scanner" --regions us,cn,br
+```
+
+Argument convention: dispatcher options go **before** the keyword, target-script
+options go **after** it.
+
+### The traps this will not save you from
+
+- **"Nobody's doing it" usually means nobody wants it.** Low supply is not
+  evidence of demand. That's why demand is measured separately.
+- **Zero results is not a gap.** A keyword with 0 repos is a term nobody uses.
+  The ladder filters these out for that reason.
+- **Narrow ≠ viable.** A gate with 3 repos might be 3 repos because the market is
+  3 people. Always run step 2 and step 4.
+- **A gap can be a moat you can't cross.** If the US is saturated and China isn't,
+  the reason might be regulation you can't satisfy.
+- **This tool sees English and Chinese only.** Other language markets are invisible
+  to it, and that is itself an unexplored direction.
+
+---
+
 ### Speed it up with a GitHub token (optional)
 
 The global engine hits GitHub's search API, which allows **10 requests/min
@@ -238,9 +395,16 @@ demoted to "reference only" and never scored.
 ```
 skills/red-ocean-scanner/
   SKILL.md              # agent skill: verdict rubric, signal taxonomy, workflows
-  scan.py               # unified entry point (routes by market)
+  scan.py               # unified entry point (mode × engine)
   global_scan.py        # global/English engine
   red_ocean_scan.py     # Chinese market engine
+  ladder_scan.py        # narrowing ladder: broad word → narrow gates
+  geo_scan.py           # geographic arbitrage across app-store regions
+  references/
+    data-sources.md     # measured source capability matrix + the Node/urllib lesson
+    calibration.md      # all measured calibration anchors
+scripts/
+  validate_skill.py     # checks the Agent Skills spec rules
 docs/
   实测数据-中文.md        # measured scores across 18 real Chinese keywords
 ```
