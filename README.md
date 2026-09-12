@@ -42,8 +42,12 @@ price war that already hit zero, with a big free incumbent in it. Score: 10 → 
 
 | Engine | Market | Reliable signals | Viewpoint |
 |---|---|---|---|
-| `global` | Global / English | GitHub repo density + star distribution | Developer ecosystem |
+| `global` | Global / English | App Store ratings (consumer) + GitHub repo density (developer) + Google/Bing autocomplete (demand) | All three market types |
 | `cn` | Chinese | WeChat article density + 360 related searches | Search intent |
+
+The global engine auto-detects whether a direction is **consumer** or **B2B**,
+because the criteria differ — App Store ratings are meaningless for B2B. Override
+with `--market consumer|business`.
 
 Merging them into one parameter would produce a tool that's wrong for both.
 
@@ -98,6 +102,22 @@ Without a token it still works, just slower. The Chinese engine is unaffected.
 
 ## Example output
 
+**Global engine** — consumer red ocean with an unbeatable incumbent:
+
+```
+🔴 receipt scanner    红    5/10   [global · 消费级市场]
+消费  App Store 22 款，头部 7,642,608 条评价，均分 4.72
+        7,642,608 评 ★4.9  Fetch: Receipts for Gift Cards
+        1,360,696 评 ★4.9  Scanner App: Genius Scan
+开发  GitHub 1,400 仓库 [低]，头部 312★
+否决项
+      − App Store 头部 7,642,608 条评价 → 已有不可撼动的既得利益者，且是免费产品
+```
+
+Note the score is 5/10 but the verdict is **red**. That is deliberate: a blocker
+overrides the score, because a 7.6M-review free incumbent cannot be offset by good
+numbers elsewhere. Verdict precedence is `incomplete data > blocker > score`.
+
 **Global engine** — a genuine gap:
 
 ```
@@ -131,6 +151,28 @@ Without a token it still works, just slower. The Chinese engine is unaffected.
       − 4 条免费白嫖词 → 用户要找免费替代品，不会付钱
       − 相关搜索出现垄断品牌《豆包录音转文字在线免费使用》→ 该词已被占位
 ```
+
+## A correction worth documenting
+
+An earlier version of this tool claimed Google, Wikipedia, and DuckDuckGo were
+unreachable, and deliberately excluded them. **That was wrong.**
+
+The cause: connectivity was tested with Node's `fetch`, and Node on that machine
+resolves DNS abnormally — every request returned `CONNECT_TIMEOUT`. Re-tested with
+Python `urllib` (the runtime these scripts actually use):
+
+| Source | curl | Python urllib | Node fetch |
+|---|---|---|---|
+| google.com | ✅ 200 | ✅ 200 | ❌ timeout |
+| en.wikipedia.org | ✅ 200 | ✅ 200 | ❌ timeout |
+| html.duckduckgo.com | ✅ 200 | ✅ 200 | ❌ timeout |
+| www.reddit.com | — | ⚠️ 403 | ❌ timeout |
+
+Google autocomplete, the App Store API, and DuckDuckGo search are now wired in —
+which is what made consumer-market assessment possible at all.
+
+**The lesson: verify reachability with the runtime you actually ship, not with a
+different HTTP client.**
 
 ## How scoring works
 
@@ -173,10 +215,13 @@ demoted to "reference only" and never scored.
 
 ## Limits — read this
 
-- **Cannot see consumer markets.** Google, Reddit, DuckDuckGo, Wikipedia, Product
-  Hunt, G2, and Capterra are all unreachable or Cloudflare-blocked from this tool.
-  Both engines are developer/search-ecosystem views. For a consumer app, this tool
-  will under-inform you — it says so rather than guessing.
+- **B2B markets are only weakly assessed.** App Store rating counts are
+  meaningless for B2B (business buyers rarely review: a B2B vet app tops out at
+  40k ratings vs 7.6M for a consumer receipt app), and G2/Capterra are
+  Cloudflare-blocked. The scanner labels this limitation rather than inventing a
+  score.
+- **Reddit, Product Hunt, G2, Capterra, AlternativeTo return HTTP 403** — platform
+  blocks, not network issues. They need official API keys or paid data.
 - **Intent data, not sales data.** The scan proves supply is thin. It does **not**
   prove anyone has ever paid. That last step is manual and mandatory: Chinese market
   → search Xianyu (闲鱼) for real completed sales; global market → check pricing

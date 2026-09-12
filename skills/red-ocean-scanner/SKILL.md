@@ -3,15 +3,17 @@ name: red-ocean-scanner
 description: >
   Red Ocean Scanner / 避红海扫描器。判断一个产品方向、关键词、选题该不该做，
   用双源实测数据出红/黄/绿裁决，而不是靠感觉。
-  支持全部市场：全球/英文市场（GitHub 仓库密度 + star 分布）与中文市场
-  （微信内容存量 + 360 相关搜索），两个引擎按市场分别校准。
+  支持全部市场：全球/英文（App Store 评价数 + GitHub 仓库密度 + Google/Bing
+  自动补全）与中文（微信内容存量 + 360 相关搜索），按市场分别校准。
+  自动区分消费级与 B2B 市场，因为两者判据不同。
   当需要选品、判断竞争激烈程度、验证一个需求是否值得投入、排查「看着有机会
   其实是坑」的方向时使用。内含一票否决规则、限流/数据缺失防误判、
   以及付费意愿的人工验证协议。
   触发词：红海、蓝海、避红海、选品、需求分析、这个方向能不能做、竞争大不大、
   有没有人做、值不值得做、关键词验证、副业方向、独立产品选品、出海、
   red ocean, blue ocean, niche validation, market saturation, competitor
-  research, is this market saturated, validate my idea, indie hacker.
+  research, is this market saturated, validate my idea, indie hacker,
+  app store competition, ASO research.
 ---
 
 # 避红海扫描 · Red Ocean Scanner
@@ -40,8 +42,12 @@ python3 scan.py --list-engines
 
 | 引擎 | 市场 | 可靠信号 | 产出 |
 |---|---|---|---|
-| `global` | 全球/英文 | GitHub 仓库密度 + star 分布 | 开发者生态视角 |
+| `global` | 全球/英文 | App Store 评价数（消费级）+ GitHub 仓库密度（开发者）+ 三源自动补全（需求） | 三类市场视角 |
 | `cn` | 中文 | 微信内容存量 + 360 相关搜索 | 搜索意图视角 |
+
+全球引擎会自动判断是**消费级**还是 **B2B** 市场，因为两者的判据不同：
+消费级看 App Store 评价数，B2B 看别的（企业买家不写评价）。
+可用 `--market consumer|business` 手动指定。
 
 也可以直接调用底层脚本（`global_scan.py` / `red_ocean_scan.py`）。
 统一入口会自动用各引擎自己的冷却策略，**推荐始终用 `scan.py`**。
@@ -65,7 +71,17 @@ GitHub 限流从 10 次/分钟提升到 30 次/分钟，词间冷却自动从 22
 | 🔴 红 | 0–4 | 别做 | 放弃，**不要靠加功能挽救** |
 | 🟡 黄(不完整) | — | 数据没取到 | 稍后重跑，**不要在这个结论上做决定** |
 
-**「否决项」比分数重要。** 出现任何一条否决项，无论分数多高都要停下来。
+**「否决项」比分数重要，而且是硬性的。** 裁决优先级是：
+
+```
+数据不完整  >  否决项  >  分数
+```
+
+出现任何否决项**一律判红，不看分数**。这条规则来自真实教训：
+`receipt scanner` 的 GitHub 只有 1,400 仓库（低供给），分数 5/10 本该是黄灯，
+但 App Store 头部是 764 万条评价的免费产品。分数会掩盖致命否决项，
+所以否决项必须能一票压过它。
+
 否决项是「这个方向从结构上就不成立」，不是「需要努力克服」。
 
 **分数只反映供给健康度，不反映需求大小。** 需求必须人工验证（见第八节）。
@@ -97,20 +113,49 @@ GitHub 限流从 10 次/分钟提升到 30 次/分钟，词间冷却自动从 22
 **一个会给出错误绿灯的工具，比没有工具更糟。** 所以本 skill 只把可验证的
 信号计入评分，宁可少给绿灯，也不把噪声当证据。
 
-## 四、不可访问的数据源（实测，别浪费时间重试）
+## 四、数据源能力（**已修正，附方法论教训**）
 
-| 源 | 状态 |
+### 教训：测试工具本身也会错
+
+早期版本声称 Google / Wikipedia / DuckDuckGo 不可达。**那是错的。**
+错误来源：用 Node 的 `fetch` 做连通性测试，而本机 Node 的 DNS 解析异常，
+所有请求 CONNECT_TIMEOUT。改用 Python `urllib`（本 skill 的实际运行时）重测后
+绝大多数源可用。
+
+| 源 | curl | Python urllib | Node fetch |
+|---|---|---|---|
+| google.com | ✅ 200 | ✅ 200 | ❌ 超时 |
+| en.wikipedia.org | ✅ 200 | ✅ 200 | ❌ 超时 |
+| html.duckduckgo.com | ✅ 200 | ✅ 200 | ❌ 超时 |
+| www.reddit.com | — | ⚠️ 403 | ❌ 超时 |
+
+**结论：连通性结论必须用目标运行时复验，不能用另一个 HTTP 客户端代测。**
+
+### ✅ 可用（已接入）
+
+Google / Bing / DuckDuckGo 自动补全 · iTunes(App Store) API · GitHub API ·
+DuckDuckGo HTML 搜索 · 360 搜索 · 搜狗微信
+
+### ❌ 真不可用（平台主动封锁，不是网络问题）
+
+Reddit（含 old.reddit 与 .json）· Product Hunt · G2 · Capterra · AlternativeTo
+——全部 HTTP 403，需要官方 API key 或付费数据源。**不要浪费时间绕过。**
+
+### ⚠️ 噪声过大，已停用
+
+| 源 | 为什么停用 |
 |---|---|
-| Google / Google Trends / Google autocomplete | ❌ 网络不可达 |
-| Reddit / DuckDuckGo / Wikipedia / YouTube | ❌ 网络不可达 |
-| Product Hunt / G2 / Capterra / AlternativeTo | ❌ Cloudflare 拦截 |
-| Bing（中英文） / 百度 / 头条 / 神马 | ❌ 固定套话或 JS 空壳 |
-| 知乎 / B站 / 小红书 / 抖音 / 闲鱼 | ❌ 403 / 412 / 登录墙 |
-| Chrome Web Store | ❌ 网络不可达 |
+| StackExchange | 模糊匹配。`invoice excel` 匹配到 Automapper 问题；`funeral home management` 匹配到 UIPickerView 问题 |
+| npm / PyPI 搜索 | 同样模糊。`sports team scheduling` 返回 52,825 个包 |
+| Google 搜索页 | JS 重渲染，服务端 HTML 里结果标题几乎为空 |
 
-**这导致一个明确的局限：本 skill 看不到消费级市场。**
-两个引擎都是**开发者/搜索生态视角**，对纯消费类产品判断力弱。
-这是 limitation，不是可以绕过的实现细节——**遇到消费级方向要主动说明这一点。**
+完整矩阵见 `references/data-sources.md`。
+
+### 仍然存在的局限
+
+**B2B 市场只能弱判。** App Store 评价数对 B2B 无效（企业买家不写评价：
+B2B 兽医软件头部 4 万条 vs 消费级 764 万条），而 G2/Capterra 被封锁。
+引擎检测到 B2B 会主动标注「口径限制」，不硬给分数。
 
 ## 五、盲点扫描（每次分析都要过一遍）
 

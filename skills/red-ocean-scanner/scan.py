@@ -43,7 +43,7 @@ GAP_OVERRIDE = os.environ.get("RED_OCEAN_GAP", "")
 ENGINES = {
     "global": {
         "script": "global_scan.py",
-        "desc": "全球/英文市场 — GitHub 仓库密度 + star 分布",
+        "desc": "全球/英文市场 — App Store + GitHub + Google/Bing 自动补全",
         "market": "global",
     },
     "cn": {
