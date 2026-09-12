@@ -1,4 +1,6 @@
-# Red Ocean Scanner · 避红海扫描器
+# Red Ocean Scanner
+
+**English** · [中文](README.zh.md)
 
 **An agent skill that tells you whether a product idea is worth building — before you spend a month on it.**
 
@@ -9,7 +11,6 @@ and the disqualifying signals.
 **Works for both global and Chinese markets** — with separate engines, because the
 reliable signals are completely different in each.
 
-[中文说明 ↓](#中文说明)
 
 ---
 
@@ -259,56 +260,58 @@ Without a token it still works, just slower. The Chinese engine is unaffected.
 
 ## Example output
 
-**Global engine** — consumer red ocean with an unbeatable incumbent:
+Sample runs below. Counts drift with the data; the *verdicts* are stable because
+they follow structure. Exact anchors are in
+[`references/calibration.md`](skills/red-ocean-scanner/references/calibration.md).
+
+**Consumer red ocean with an unbeatable incumbent:**
 
 ```
-红  receipt scanner    5/10   [global · 消费级市场]
-裁决  有硬性否决项
-      供给薄度 50%（越高越没人做）   需求强度 100%（越高越有人要）
+红  receipt scanner    6/10   [global · 消费级市场]
+裁决  需求旺但供给厚 → 已被认领（主因：消费供给）
+      供给薄度 33%（越高越没人做）   需求强度 100%（越高越有人要）
+需求  自动补全 17 条（google:10 bing:7 ddg:0），商业意图 6 条
 消费  App Store 22 款，头部 7,642,608 条评价，均分 4.72
         7,642,608 评 ★4.9  Fetch: Receipts for Gift Cards
         1,360,696 评 ★4.9  Scanner App: Genius Scan
-开发  GitHub 1,400 仓库 [低]，头部 312★
-否决项
-      − App Store 头部 7,642,608 条评价 → 已有不可撼动的既得利益者，且是免费产品
+开发  GitHub 1,399 仓库 [低]，头部 312★
 ```
 
-Note the score is 5/10 but the verdict is **red**. That is deliberate: a blocker
-overrides the score, because a 7.6M-review free incumbent cannot be offset by good
-numbers elsewhere. Verdict precedence is `incomplete data > blocker > score`.
+Note the score is 6/10 yet the verdict is **red**. That is deliberate: the matrix
+plus the blocker decide, not the number. A free incumbent with 7.6M ratings
+cannot be offset by decent numbers elsewhere.
 
-**Global engine** — a genuine gap:
+**A genuine gap:**
 
 ```
-🟢 veterinary clinic scheduling    绿    9/10   [global]
-供给  GitHub 117 仓库 [极低]，头部 13★
-            10★ Rubel011/Vetspot_veterinary-clinic_website — The Veterinary System…
-            13★ blingyplus/Vet-Management-System — A comprehensive veterinary hosp…
+绿(覆盖度低)  vet clinic software    10/10   [global · B2B市场]
+裁决  供给稀薄 + 需求存在（**但这不等于蓝海**，见下方护城河追问）；仅测到 2 个维度
+需求  自动补全 5 条，商业意图 5 条
+消费  App Store 23 款，头部 40,320 条评价，均分 4.45
+开发  GitHub 70 仓库 [极低]，头部 13★
 依据
-      + GitHub 仅 117 个仓库 → 开发者生态几乎没有覆盖
-      + 头部仅 13★ → 没有赢家。需求存在但没人做好，缺口的典型形态
-下一步  GitHub 供给稀薄只证明没人做，不证明有人买。去该行业的垂直社区读真实抱怨。
+      + GitHub 仅 70 仓库 → 开发者侧几乎无人做
+      + 5 条商业意图补全词，例《vet practice software》
+护城河追问（工具测不到，必须你自己答）
+      绿灯只说明「供给薄 + 有需求」，不说明你守得住。
+      追问一句：10 个人下周抄我，我靠什么还活着？
 ```
 
-**Global engine** — saturated:
+`(覆盖度低)` is honest labelling, not a defect: B2B directions have no App Store
+criterion, so only 2 dimensions are measurable.
+
+**Chinese engine — a free-tier race:**
 
 ```
-🔴 todo list app    红    2/10   [global]
-供给  GitHub 90582 仓库 [红海]，头部 2121★
-否决项
-      − 头部仓库 2121★ → 已有成熟开源替代品
-      − 仓库数达五位数 → 红海，不要靠加功能挽救
-```
-
-**Chinese engine** — free-tier race:
-
-```
-🔴 录音转文字    红    3/10
+红  录音转文字    3/10
+供给  微信 1000 篇 [低]
+      标题信号: 已有付费工具×5 | 教程/怎么用×2
 需求  高购买意图长尾 1 条: ★ 录音转文字软件
-      免费白嫖词 4 条: 录音转文字在线免费 / 豆包录音转文字在线免费使用
+      免费白嫖词 5 条: 录音转文字在线免费 / 豆包录音转文字在线免费使用
+      垄断品牌: 豆包录音转文字在线免费使用
 否决项
-      − 4 条免费白嫖词 → 用户要找免费替代品，不会付钱
-      − 相关搜索出现垄断品牌《豆包录音转文字在线免费使用》→ 该词已被占位
+      − 5 条免费白嫖词 → 用户要找免费替代品，不会付钱
+      − 相关搜索出现垄断品牌 → 该词已被占位
 ```
 
 ## A correction worth documenting
@@ -472,7 +475,8 @@ skills/red-ocean-scanner/
 scripts/
   validate_skill.py            # spec rules + token budget + runs the tests
 tests/
-  test_decide.py               # offline regression on the verdict matrix
+  test_decide.py               # offline regression on the global verdict matrix
+  test_cn_engine.py            # offline regression on the Chinese engine dispatch
   trigger_eval.json            # 20 trigger queries for description tuning
 docs/
   实测数据-中文.md               # measured scores across 18 Chinese keywords
@@ -484,80 +488,3 @@ budget). Everything else loads on demand.
 ## License
 
 MIT
-
----
-
-# 中文说明
-
-**一个 agent skill：在你花一个月做产品之前，先告诉你这个方向该不该做。**
-
-市面上"找蓝海"的建议大多是感觉。这个是扫描：实测真实供给与需求信号，
-输出**红/黄/绿裁决**，附证据和否决项。
-
-**同时支持全球市场与中文市场**，用两个独立引擎——因为两个市场的可靠信号
-完全不同，合并会得到一个两边都不准的工具。
-
-## 为什么需要它
-
-**存量少不等于机会，可能只是没人关心。** 这个仓库里的每条规则都来自真实反例。
-
-典型反例 `录音转文字`：供给侧完美（微信仅 1000 篇、4 条付费工具信号），
-但相关搜索全是《永久免费版》《豆包在线免费》——**用户不是要找工具，是要找免费替代品。**
-评分从 10 掉到 3。
-
-## 快速开始
-
-```bash
-cd skills/red-ocean-scanner
-
-export GITHUB_TOKEN=ghp_xxx                                   # 可选，提速 3 倍
-python3 scan.py --engine global "veterinary clinic software"   # 全球市场
-python3 scan.py --engine cn     "代账公司对账单"                  # 中文市场
-python3 scan.py --engine both   "invoice excel"                 # 双市场对比
-```
-
-纯标准库，无需 `pip install`，不需要 API key。
-
-## 两个引擎
-
-| 引擎 | 市场 | 可靠信号 | 视角 |
-|---|---|---|---|
-| `global` | 全球/英文 | GitHub 仓库密度 + star 分布 | 开发者生态 |
-| `cn` | 中文 | 微信内容存量 + 360 相关搜索 | 搜索意图 |
-
-## 核心方法论：信号可靠性分级
-
-**只有可靠信号计入评分**，噪声信号降级为参考：
-
-| 信号 | 区分度（实测） |
-|---|---|
-| ✅ GitHub 仓库数 | **4000 倍量级**：todo app 90,582 vs 兽医排班 117 |
-| ✅ 头部仓库 star | 14,139★（红海）vs 2★（缺口） |
-| ✅ 微信内容存量 | 8,580（红海）vs 511（缺口） |
-| ✅ 360 相关搜索词 | 真实搜索行为，可数 |
-| ❌ StackOverflow | 模糊匹配噪声极大：`invoice excel` 匹配到 Automapper 问题 |
-| ❌ npm / PyPI 搜索 | 同样模糊：`sports team scheduling` 返回 52,825 个包 |
-
-**设计原则：宁可漏判，不可误判。** 一个会给出错误绿灯的工具，比没有工具更糟。
-
-## 校准锚点（实测）
-
-**全球**：殡葬管理 23 仓库/2★ → 🟢9；兽医排班 117/13★ → 🟢9；
-发票 Excel 2,262/411★ → 🟡5；习惯打卡 60,479/14,139★ → 🔴2；
-待办清单 90,582/2,121★ → 🔴2。
-
-**中文**：见 `docs/实测数据-中文.md`。
-
-## 边界（重要）
-
-- **看不到消费级市场。** Google、Reddit、Product Hunt、G2 在本环境全部不可达。
-  两个引擎都是开发者/搜索生态视角。遇到消费类方向，工具会**主动说明局限**，
-  而不是硬给一个绿灯。
-- **这是意图数据，不是成交数据。** 扫描证明"供给稀薄"，
-  **不证明有人掏过钱**。最后一步必须人工：中文看闲鱼真实成交，全球看定价页与评测站。
-- 有频率限制，一次别跑太多词。
-
-## 详细文档
-
-- `skills/red-ocean-scanner/SKILL.md` — 完整判读规则、信号分级、双引擎工作流、盲点清单
-- `docs/实测数据-中文.md` — 18 个中文关键词的实测评分与反例分析

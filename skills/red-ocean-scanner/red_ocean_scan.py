@@ -205,21 +205,24 @@ def scan(kw):
             "标题出现「我自己做了/vibecoding」→ 开发壁垒已归零，你做完守不住")
 
     r["score"] = max(0, min(10, s))
+    # 与全球引擎共用同一套裁决词表，避免两个引擎输出不同的符号
+    # （全球引擎用 绿/红/🟠 + verdict_kind；这里保持一致）。
+    # 中文引擎目前只有单一综合分，没有矩阵，所以 kind 按分数粗分。
     if r["score"] >= 8:
-        r["verdict"] = "绿"
+        r["verdict"], r["verdict_kind"] = "绿", "机会"
     elif r["score"] >= 5:
-        r["verdict"] = "黄"
+        r["verdict"], r["verdict_kind"] = "黄", "有硬伤"
     else:
-        r["verdict"] = "红"
+        r["verdict"], r["verdict_kind"] = "红", "红海"
     if cnt is None:
-        r["verdict"] = "黄(不完整)"
+        r["verdict"], r["verdict_kind"] = "黄(不完整)", "数据缺失"
     return r
 
 
 def render(r):
-    icon = {"绿": "🟢", "黄": "🟡", "红": "🔴"}.get(r["verdict"], "🟡")
+
     L = [f"\n{'='*66}",
-         f"{icon} {r['keyword']}    {r['verdict']}    {r['score']}/10",
+         f"{r['verdict']}  {r['keyword']}    {r['score']}/10",
          f"{'='*66}"]
     if r.get("wechat_articles") is not None:
         L.append(f"供给  微信 {r['wechat_articles']} 篇 [{r['supply_tier']}]")
@@ -253,12 +256,14 @@ def render(r):
 
 
 def next_step(r):
-    v = r["verdict"]
-    if v == "绿":
+    """按 verdict_kind 判断，不要用 verdict 字符串比较——
+    它可能带「(不完整)」后缀，用 == 会把绿灯错判成红灯。"""
+    kind = r.get("verdict_kind", "")
+    if kind == "机会":
         return "去闲鱼搜该词，看有没有人在卖同类服务、价格、成交数。有人卖就开做。"
-    if v == "黄":
+    if kind == "有硬伤":
         return "先别做。去闲鱼验证付费，或回到需求侧换更窄的关键词再扫一次。"
-    if v.startswith("黄"):
+    if kind == "数据缺失":
         return "数据不完整，隔几分钟重跑一次，别在此结论上做决定。"
     return "放弃。不要试图靠加功能挽救一个红海方向。"
 
@@ -286,7 +291,8 @@ def main():
         ranked = sorted(results, key=lambda x: -x["score"])
         print(f"\n{'='*66}\n排名（分高者优先）")
         for i, r in enumerate(ranked, 1):
-            print(f"  {i}. {r['score']:>2}/10  {r['verdict']:<9} {r['keyword']}")
+            print(f"  {i}. {r['score']:>2}/10  {r['verdict']:<16}"
+                  f"{r.get('verdict_kind',''):<8} {r['keyword']}")
 
     if a.report:
         with open(a.report, "w", encoding="utf-8") as f:
