@@ -5,7 +5,7 @@ license: MIT
 compatibility: "需要 Python 3.8+ 与出网访问（GitHub / iTunes / Google·Bing 自动补全 / 360 / 搜狗微信）。 无需 pip install，无 API key。设 GITHUB_TOKEN 可把 GitHub 限流从 10 次/分提到 30 次/分；自带磁盘缓存以降请求量。 部分数据源（Reddit / Product Hunt / G2 / Capterra）在多数网络下返回 403，属预期。"
 metadata:
   author: xxdeye
-  version: "1.3.0"
+  version: "1.4.0"
   repository: https://github.com/xxdeye/red-ocean-scanner
   references: references/data-sources.md, references/calibration.md, references/blue-ocean-methods.md
 ---

@@ -286,16 +286,20 @@ cannot be offset by decent numbers elsewhere.
 ```
 绿(覆盖度低)  vet clinic software    10/10   [global · B2B市场]
 裁决  供给稀薄 + 需求存在（**但这不等于蓝海**，见下方护城河追问）；仅测到 2 个维度
-需求  自动补全 5 条，商业意图 5 条
+需求  自动补全 11 条（google:0 bing:11 ddg:0），商业意图 11 条
 消费  App Store 23 款，头部 40,320 条评价，均分 4.45
 开发  GitHub 70 仓库 [极低]，头部 13★
 依据
       + GitHub 仅 70 仓库 → 开发者侧几乎无人做
-      + 5 条商业意图补全词，例《vet practice software》
+      + 11 条商业意图补全词，例《vet clinic software pricing》
 护城河追问（工具测不到，必须你自己答）
       绿灯只说明「供给薄 + 有需求」，不说明你守得住。
       追问一句：10 个人下周抄我，我靠什么还活着？
 ```
+
+The bracketed numbers are **per-source contribution counts** — read them before the
+verdict. A source showing 0 is more often a fetch failure than an absence of
+suggestions, and the query echo itself is not counted as commercial intent.
 
 `(覆盖度低)` is honest labelling, not a defect: B2B directions have no App Store
 criterion, so only 2 dimensions are measurable.
@@ -431,14 +435,21 @@ generator yields a pile of narrow gates nobody wants.
   meaningless for B2B (business buyers rarely review: a B2B vet app tops out at
   40k ratings vs 7.6M for a consumer receipt app), and G2/Capterra are
   Cloudflare-blocked. The scanner labels this limitation rather than inventing a
-  score.
+  score. There is no cheap substitute: the plugin ecosystems (WordPress /
+  Firefox / JetBrains) look like a fit but were measured and rejected — their
+  counts come from fuzzy full-text search (the same word gives 1,691 vs 189
+  depending on the endpoint), the hits are largely unrelated, and the top
+  Firefox results are dead add-ons with zero daily users. GitHub remains the only
+  real B2B supply signal.
 - **Reddit, Product Hunt, G2, Capterra, AlternativeTo return HTTP 403** — platform
   blocks, not network issues. They need official API keys or paid data.
-- **Search-engine sources are unreliable.** DuckDuckGo rate-limits after ~5
-  requests and returns a page with *zero results* rather than an error — which
-  reads as "no competition" if unhandled. The scanner detects and retries this,
-  and SERP data is deliberately excluded from scoring so the verdict cannot
-  drift with a search engine's mood.
+- **Search-engine sources are unreliable.** DuckDuckGo rate-limits from the 3rd
+  request on and returns a page with *zero results* rather than an error — which
+  reads as "no competition" if unhandled. The scanner detects the anomaly page
+  and labels the dimension as missing, but deliberately makes **one attempt with
+  no backoff retries** (waiting 36s for a dimension that does not score is pure
+  waste), and SERP data is excluded from scoring so the verdict cannot drift with
+  a search engine's mood.
 - **Two data-quality traps are handled but worth knowing:** iTunes'
   `entity=software` does *not* exclude games (a nonsense query matched Fruit
   Ninja's 373k ratings), and Bing's autocomplete silently strips trailing
@@ -460,6 +471,8 @@ generator yields a pile of narrow gates nobody wants.
 skills/red-ocean-scanner/
   SKILL.md                     # verdict rubric, signal taxonomy, workflow
   scan.py                      # unified entry point (mode × engine)
+  _http.py                     # shared HTTP layer: disk cache, per-source
+                               #   throttling, GitHub quota persisted to disk
   global_scan.py               # global/English engine
   red_ocean_scan.py            # Chinese market engine
   ladder_scan.py               # narrowing ladder: broad word → narrow gates
@@ -474,15 +487,23 @@ skills/red-ocean-scanner/
     data-sources.md            # source capability matrix + silent-failure traps
 scripts/
   validate_skill.py            # spec rules + token budget + runs the tests
+  remeasure_cn.py              # re-measure Chinese keywords / regenerate the
+                               #   data doc (preflights supply, writes nothing
+                               #   if the source is IP-blocked)
 tests/
   test_decide.py               # offline regression on the global verdict matrix
-  test_cn_engine.py            # offline regression on the Chinese engine dispatch
+  test_cn_engine.py            # offline regression on Chinese verdict dispatch
+  test_demand_filter.py        # autocomplete filter (one source was silently emptied)
+  test_http_cache.py           # cache / negative cache / quota / response validity
+  test_http_shared.py          # ladder + geo really go through the shared layer
+  test_scope_guard.py          # out-of-scope (physical goods) refusal
+  test_supply_blocked.py       # a blocked supply source must not read as "0 articles"
   trigger_eval.json            # 20 trigger queries for description tuning
 docs/
   实测数据-中文.md               # measured scores across 18 Chinese keywords
 ```
 
-SKILL.md is kept to **234 lines / ~5,000 tokens** (the spec's progressive-disclosure
+SKILL.md is kept to **232 lines / ~5,000 tokens** (the spec's progressive-disclosure
 budget). Everything else loads on demand.
 
 ## License
