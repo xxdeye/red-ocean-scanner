@@ -222,6 +222,13 @@ def _is_generic_strip(query, suggestion):
 
     反例（必须保留）：query="habit tracker" 时 "habit tracker app" 是
     合法的向下细化，不是剥离产物——query 本身不以通用词结尾。
+
+    第二个条件（保留含被剥离词的建议）修的是一个**过杀 bug**：
+    早期只比较主干前缀，于是 "vet clinic software" 的 12 条 Bing 建议
+    （…demo / …pricing / …reviews）**全部被丢掉**，三源交叉验证静默退化成
+    只剩 Google 一源（实测 google:5 bing:0 ddg:0，两次请求都成功）。
+    判据是：建议若**仍含有被剥掉的那个产品词**，就是真实细化而不是替换匹配。
+    "banana peeling machine design" 里没有 software → 仍按剥离丢弃。
     """
     q = re.findall(r"\w+", query.lower())
     sg = re.findall(r"\w+", suggestion.lower())
@@ -229,13 +236,18 @@ def _is_generic_strip(query, suggestion):
         return False
     if q[-1] not in GENERIC_TAIL:      # query 不以通用产品词结尾 → 不可能是剥离
         return False
-    stem = q[:]
+    stem, stripped = q[:], []
     while stem and stem[-1] in GENERIC_TAIL:
-        stem.pop()
+        stripped.append(stem.pop())
     if not stem:
         return False
-    # 建议词以去掉通用词后的主干开头，就是在匹配被剥掉的那个词
-    return sg[:len(stem)] == stem
+    if sg[:len(stem)] != stem:         # 建议词没以主干开头 → 不是剥离产物
+        return False
+    if not stripped:                   # 理论上不可达（上面已保证至少一个）
+        return True
+    # 建议里仍出现被剥离的产品词 → 是细化（"vet clinic software pricing"），保留；
+    # 一个都没有 → 是被替换成了别的词（"banana peeling machine design"），丢弃。
+    return not any(w in sg for w in stripped)
 
 
 def autocomplete(kw):
@@ -253,6 +265,10 @@ def autocomplete(kw):
             kept = 0
             for w in words or []:
                 if not w:
+                    continue
+                # 三源都会把查询本身回显在第一位；它是分词、不是建议。
+                # 早期它会被计入 "商业意图 5 条" 这类计数，虚高一个。
+                if w.strip().lower() == kw.strip().lower():
                     continue
                 if _is_generic_strip(kw, w):
                     dropped += 1

@@ -56,6 +56,7 @@ TTL = {
     "itunes": 7 * 24 * 3600,
     "autocomplete": 24 * 3600,
     "so360": 12 * 3600,
+    "so360sug": 12 * 3600,
     "sogou": 6 * 3600,
     "ddg": 24 * 3600,
     "default": 3600,
@@ -68,10 +69,16 @@ TTL = {
 # 早期版本把它当正常响应当缓存了 6 小时——等于把一个**瞬时**状态
 # 固化成六小时的错误结论，之后每次命中缓存都继续误判。
 # 缓存只能缓存「确定有效」的响应。
+#
+# 长度下限必须**按源**给，不能用统一的 500B 门槛：
+# 360 补全接口的完整响应只有约 460B（10 条词条），统一门槛会把它
+# 判成「疑似风控」而丢弃——实测中文引擎取 360 数据时正是这样失败的。
 BAD_RESPONSE = {
     "sogou": (r"验证码|antispider|访问过于频繁|请输入验证码|安全验证", 8000),
     "ddg": (r"anomaly|unusual traffic|blocked", 5000),
     "github": (r"API rate limit exceeded", 0),
+    "so360": (r"^\s*$", 2000),          # SERP 页正常约 540KB
+    "so360sug": (r"^\s*$", 100),        # 补全 JSON 正常约 460B
     "itunes": (r"^\s*$", 0),
     "default": (r"^\s*$", 0),
 }
@@ -80,12 +87,22 @@ BAD_RESPONSE = {
 def response_is_valid(url, body):
     """(是否有效, 原因)。无效的响应绝不写缓存。"""
     kind = classify(url)
+    # JSON 接口收到 HTML 一定是门户/风控/错误页，不是数据。
+    # 这类响应长度可以很大，纯靠长度门槛拦不住——实测用假服务器把 360 的
+    # HTML 错误页喂进解析路径时，两份 HTML 都被当成有效响应缓存了。
+    # 门禁类响应一旦进缓存，TTL 内每次命中都继续误判。
+    if kind in JSON_SOURCES and body.lstrip()[:1] not in ("{", "["):
+        return False, "期望 JSON，收到非 JSON 响应（疑似门户/风控页）"
     pat, min_len = BAD_RESPONSE.get(kind, BAD_RESPONSE["default"])
     if min_len and len(body) < min_len:
         return False, f"响应过短（{len(body)}B < {min_len}B）"
     if pat and re.search(pat, body, re.I):
         return False, "命中风控/限流特征"
     return True, ""
+
+
+# 返回体必须是 JSON 的源。SERP / DDG HTML 这类当然是 HTML，不在其中。
+JSON_SOURCES = {"github", "itunes", "autocomplete", "so360sug"}
 
 
 def classify(url):
@@ -95,6 +112,10 @@ def classify(url):
         return "itunes"
     if "suggestqueries.google" in url or "osjson.aspx" in url or "/ac/?" in url:
         return "autocomplete"
+    # 360 补全接口（sug.so.360.cn）与 SERP（www.so.com）长度差三个数量级，
+    # 必须是两个源、两套长度门槛——早期只认 so.com，补全响应落进 default。
+    if "sug.so.360.cn" in url:
+        return "so360sug"
     if "so.com" in url:
         return "so360"
     if "weixin.sogou.com" in url:
@@ -191,6 +212,10 @@ def github_gate(verbose=True):
 
     先看剩余配额与重置时间：若配额已耗尽且重置还没到，就睡到重置。
     否则按最小间隔节流。
+
+    「上一次调用时刻」与配额一起落盘：限流按 IP 算、不按进程算，
+    只记内存的话每个新进程都以为自己刚起步——连续跑几条命令就会
+    各来一串 10 连发，一发不剩地撞满再等整分钟。
     """
     q = _load_quota()
     now = time.time()
@@ -203,11 +228,18 @@ def github_gate(verbose=True):
             print(f"  [限流] GitHub 配额已耗尽，等待 {wait:.0f}s 至窗口重置…",
                   file=sys.stderr, flush=True)
         time.sleep(wait)
+        now = time.time()
 
-    gap = GA_MIN_GAP - (now - _last_gh_call[0])
+    last = max(_last_gh_call[0], q.get("last_call", 0))
+    gap = GA_MIN_GAP - (now - last)
     if gap > 0:
         time.sleep(gap)
     _last_gh_call[0] = time.time()
+
+    # 只更新 last_call，保留 _record_quota 写的 remaining/reset
+    q = _load_quota()
+    q["last_call"] = _last_gh_call[0]
+    _save_quota(q)
 
 
 def _record_quota(headers):

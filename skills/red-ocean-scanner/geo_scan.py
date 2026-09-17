@@ -25,18 +25,23 @@
 
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.parse
-import urllib.request
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 except (AttributeError, ValueError):
     pass
 
-UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-      "(KHTML, like Gecko) Chrome/120 Safari/537.36")
+# HTTP 层统一交给 _http：磁盘缓存 + 主动限流。
+# 这里原来是裸 urllib。geo 一次要打「地区数 ×（1 个品类 + 3 个基准 App）」
+# 个请求（16 个地区 = 64 次），不打缓存意味着每次重跑都全量重来；
+# 而且基准 App（whatsapp/facebook/instagram）的评价数一周内几乎不变，
+# 是最该被缓存的一类查询。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _http  # noqa: E402
 
 # 生态基准 App：用它们在各地的评价量级，代表该地区 App 生态的整体规模。
 # 归一化 = 目标品类头部评价数 / 该地区生态基准。
@@ -54,23 +59,30 @@ REGIONS = [
 
 
 def ecosystem_base(country):
-    """该地区 App 生态基准 = 头部热门 App 的最高评价数。"""
-    best = 0
+    """该地区 App 生态基准 = 头部热门 App 的最高评价数。
+
+    返回 (基准值, 是否至少取到一个基准 App)。
+    **必须把失败讲出来**：早期取不到时静默返回 1，于是该地区的归一化饱和度
+    被放大几个数量级（真实基准是百万级），「成熟市场 / 空白市场」的选择
+    整个被翻转——而输出里一点异常都看不出来。
+    """
+    best, got = 0, False
     for a in BASE_APPS:
         try:
             best = max(best, app_stats(a, country)["top"])
+            got = True
         except Exception:                                    # noqa: BLE001
             pass
         time.sleep(0.3)
-    return best or 1
+    return (best or 1), got
 
 
 def app_stats(kw, country):
     u = ("https://itunes.apple.com/search?term=" + urllib.parse.quote(kw)
          + f"&entity=software&limit=25&country={country}")
-    req = urllib.request.Request(u, headers={"User-Agent": UA})
-    with urllib.request.urlopen(req, timeout=15) as r:
-        d = json.loads(r.read().decode("utf-8", "ignore"))
+    # 30s：实测本机 iTunes 的 TLS 握手经常要 7–10s，偶尔更久。
+    # 卡在 15s 会让「所有地区均取数失败」变成常态，而那不是数据源的问题。
+    d = json.loads(_http.fetch(u, timeout=30))
     apps = d.get("results", [])
     ratings = [(a.get("userRatingCount", 0) or 0) for a in apps]
     return {
@@ -92,7 +104,9 @@ def scan(kw, regions=None, min_size=1000):
         try:
             res[c] = app_stats(kw, c)
         except Exception as e:                              # noqa: BLE001
-            res[c] = {"error": type(e).__name__}
+            # 必须带上真实错误。早期只记 type(e).__name__，于是「所有地区均取数
+            # 失败」既可能是超时也可能是解析错，用户完全无法判断该重跑还是该修。
+            res[c] = {"error": f"{type(e).__name__}: {str(e)[:60]}"}
         time.sleep(0.45)
 
     ok = {c: v for c, v in res.items() if "top" in v}
@@ -100,10 +114,16 @@ def scan(kw, regions=None, min_size=1000):
         return {"keyword": kw, "regions": res, "error": "所有地区均取数失败"}
 
     # 归一化：相对本地生态的饱和度
+    weak_base = []
     for c in ok:
-        base = ecosystem_base(c)
+        base, got = ecosystem_base(c)
         ok[c]["base"] = base
+        ok[c]["base_measured"] = got
         ok[c]["norm"] = ok[c]["top"] / base if base else 0
+        if not got:
+            # 基准没取到时 base 会退化成 1，归一化数字不可用——宁可标出来，
+            # 也不要拿一个放大几万倍的饱和度去选「成熟/空白市场」。
+            weak_base.append(c)
 
     # 成熟市场 = 归一化饱和度最高的地区（需求在该生态里被充分验证）
     mature = max(ok, key=lambda c: ok[c]["norm"])
@@ -142,7 +162,7 @@ def scan(kw, regions=None, min_size=1000):
         "mature_name": names.get(mature, mature), "blank_name": names.get(blank, blank),
         "mature_top": mt, "blank_top": bt, "ratio": ratio,
         "mature_norm": mn, "blank_norm": bn,
-        "min_size": min_size,
+        "min_size": min_size, "weak_base": weak_base,
         "arbitrage_verdict": verdict,
     }
 
@@ -176,6 +196,12 @@ def render(r):
              f"（归一 {r.get('blank_norm',0):.4f}，相对本地生态竞争稀薄）")
     L.append(f"差距倍数  {r['ratio']:,.0f}x（按归一化饱和度，非绝对评价数）")
     L.append(f"裁决      {r['arbitrage_verdict']}")
+    if r.get("weak_base"):
+        names_w = "、".join(name_of.get(c, c) for c in r["weak_base"])
+        L.append("")
+        L.append(f"⚠️ 口径限制：{names_w} 的生态基准 App 取数失败，")
+        L.append("   该地区归一化分母退化为 1，饱和度被放大几个数量级——")
+        L.append("   这些数字不可用于比较，请重跑（基准 App 有 7 天缓存，重跑通常即可）。")
     L.append("")
     L.append("为什么用归一化：绝对值会同时误判两个方向——把小市场里的正常品类")
     L.append("当成机会，也把大市场里的真空白当成没市场。比值必须相对本地生态。")

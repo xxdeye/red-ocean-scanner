@@ -42,6 +42,18 @@ def main():
          '{"message":"API rate limit exceeded"}', False, "GitHub 限流"),
         ("https://itunes.apple.com/search?term=x", '{"resultCount":1}',
          True, "iTunes 正常"),
+        # JSON 接口收到 HTML：长度可以很大，长度门槛拦不住，必须按内容判。
+        # 实测假服务器把 360 的 HTML 错误页喂进解析路径时，两份 HTML 都进了缓存。
+        ("https://sug.so.360.cn/suggest?word=x",
+         "<html><body>访问异常</body></html>" + "x" * 5000, False,
+         "JSON 接口收到 HTML（门户/风控页）"),
+        ("https://api.github.com/search/repositories?q=x",
+         "<html>502 Bad Gateway</html>" + "x" * 5000, False, "GitHub 收到 HTML 网关页"),
+        ("https://api.bing.com/osjson.aspx?query=x",
+         '<html><body>captcha</body></html>', False, "补全收到 HTML 验证码页"),
+        # 反向：HTML 源当然不该被这条规则误伤
+        ("https://www.so.com/s?q=x", "<html><table class=\"rs-table\"></table></html>"
+         + "x" * 3000, True, "360 SERP 是 HTML 源，不受 JSON 规则影响"),
     ]
     for url, body, want, why in cases:
         got, _ = H.response_is_valid(url, body)

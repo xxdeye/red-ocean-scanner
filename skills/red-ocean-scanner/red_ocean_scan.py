@@ -49,6 +49,15 @@ INTENT = (r"工具|软件|推荐|哪个好|批量|一键|自动|插件|小程序
           r"|多少钱|价格|收费|报价|费用|成本|价目|明细表|对比|排行|十大")
 # 白嫖意图：在找免费替代品的人不会付钱
 FREEBIE = r"免费|破解|永久免费|白嫖|不用钱|绿色版|不要钱"
+# 纯知识问法：在问「怎么做/在哪/什么意思」，不是在找工具。
+# 补全词里这类占比很高（实测「发票批量导出」10 条高意图里 4 条是纯问法），
+# 不排除的话高意图计数会被问句灌水、把需求档位抬高一档。
+#
+# **「多少」不在这里**：《多少钱》《报价多少》是 B2B 的强购买意图
+# （用户在算预算），engine-cn.md 把它列为正信号。若按通用问法一并剔除，
+# 会把 B2B 方向的价格信号全部误杀——那正好是最值钱的那类词。
+KNOWLEDGE = (r"怎么|如何|是什么|什么是|为什么|哪里|在哪|哪些|多久"
+             r"|能不能|可以吗|教程|入门|区别|含义|意思|步骤|流程|方法")
 # 垄断品牌：该搜索词已被强势产品占死
 BRAND = r"豆包|讯飞|剪映|通义|文心|鲁青|金蝶|用友|钉钉|飞书|腾讯文档|金山"
 
@@ -72,11 +81,13 @@ RateLimited = _http.RateLimited
 
 
 def fetch(url, tries=3, backoff=25):
-    body = _http.fetch(url, timeout=20, tries=tries, backoff=backoff)
-    if not body or len(body) <= 500:
-        # 搜狗风控页很短。视为限流而不是「没有数据」。
-        raise RateLimited("响应为空或过短，疑似风控")
-    return body
+    """取数据。有效性判定（壳页/验证码/长度门槛）统一在 _http 里按源做。
+
+    这里**不再**做统一的长度检查：早期用 `len(body) <= 500`
+    一刀切，会把 360 补全接口的完整响应（约 460B）判成风控而丢弃。
+    长度下限必须按源给——搜狗 8000B、360 SERP 2000B、360 补全 100B。
+    """
+    return _http.fetch(url, timeout=20, tries=tries, backoff=backoff)
 
 
 def tier(n):
@@ -106,6 +117,28 @@ def so_related(kw):
     return list(dict.fromkeys(words))
 
 
+def so_suggest(kw):
+    """360 补全接口 = 用户正在输入的查询（需求长尾的第二来源）。
+
+    为什么要加它：相关搜索表是「实体词」（怎么写、模板），补全词是
+    「查询原句」（软件哪个好用、工具在哪）。实测两者的高意图覆盖不同：
+      录音转文字    相关搜索 1 条 vs 补全 5 条
+      公众号排版    相关搜索 1 条 vs 补全 2 条（且这 2 条是相关搜索没有的）
+    更关键的是：相关搜索偶发取不到时，旧实现会直接判「没有相关搜索词
+    → 基本没人在搜，这是最危险的信号」——一个**假警报**。补全源可用时
+    就不该报这个。
+    """
+    s = fetch("https://sug.so.360.cn/suggest?word=" + urllib.parse.quote(kw))
+    try:
+        d = json.loads(s)
+    except ValueError:
+        raise RateLimited("补全响应不是 JSON，疑似风控")
+    if d.get("errorcode") not in (0, "0", None):
+        raise RateLimited(f"补全接口返回 errorcode={d.get('errorcode')}")
+    return [x.get("word", "").strip() for x in d.get("result", [])
+            if x.get("word", "").strip()]
+
+
 def wechat(kw):
     """搜狗微信 = 供给存量 + 标题信号"""
     s = fetch("https://weixin.sogou.com/weixin?type=2&query=" + urllib.parse.quote(kw))
@@ -128,13 +161,29 @@ def wechat(kw):
 
 def scan(kw):
     """返回一条完整裁决"""
-    r = {"keyword": kw, "blockers": [], "evidence": []}
+    r = {"keyword": kw, "blockers": [], "evidence": [],
+         # 先置空再按需覆盖：否则 JSON 输出的字段随成败变化，
+         # 下游按固定字段解析就会在有/无错误两种情况下拿到不同结构。
+         "error_demand": None, "error_suggest": None}
     rel = related = []
     try:
         related = so_related(kw)
     except Exception as e:                          # noqa: BLE001
         r["error_demand"] = f"需求源失败: {e}"
     r["related_searches"] = related
+
+    # 第二需求源：360 补全。**只在相关搜索为空时并入**——
+    # 评分阈值（高意图 ≥4 满分 / ≥2 得 3 分）是按相关搜索的词数校准的，
+    # 两个源直接合并会把计数灌大（实测「发票批量导出」8 → 18 条，
+    # 虚增一档）。所以它的职责是**补盲**，不是加码。
+    time.sleep(2)
+    suggests = []
+    try:
+        suggests = so_suggest(kw)
+    except Exception as e:                          # noqa: BLE001
+        r["error_suggest"] = f"补全源失败: {e}"
+    r["suggestions"] = suggests
+    r["demand_source"] = "相关搜索+补全" if suggests else "相关搜索"
 
     time.sleep(3)
     try:
@@ -157,12 +206,21 @@ def scan(kw):
     # ── 打分 ────────────────────────────────────────────
     cnt = r.get("wechat_articles")
     sig = r.get("signals", {})
-    hi = [w for w in related if re.search(INTENT, w)]
-    fb = [w for w in related if re.search(FREEBIE, w)]
-    br = [w for w in related if re.search(BRAND, w)]
+    # 需求词的取用顺序：相关搜索优先；为空才退回补全。
+    # 补全里纯问法（怎么写/在哪/什么意思）占比高，先剔除再数高意图。
+    pool = related or suggests
+    r["demand_used"] = ("相关搜索" if related else
+                        ("补全（相关搜索为空，已降级）" if suggests else "无"))
+    hi = [w for w in pool if re.search(INTENT, w) and not re.search(KNOWLEDGE, w)]
+    fb = [w for w in pool if re.search(FREEBIE, w)]
+    br = [w for w in pool if re.search(BRAND, w)]
     r["high_intent"] = hi
     r["freebie"] = fb
     r["brand"] = br
+    if not related and suggests:
+        r["evidence"].append(
+            f"相关搜索为空，需求改用 360 补全词（{len(suggests)} 条，"
+            f"{len(hi)} 条高意图）——不是「没人搜」，是相关搜索表没出词")
 
     s = 0
     # 供给 (3)
@@ -178,13 +236,20 @@ def scan(kw):
     elif sig:
         s += 1
     # 需求 (4)
-    if related:
+    if pool:
         s += 4 if len(hi) >= 4 else (3 if len(hi) >= 2 else (2 if hi else 0))
         if hi:
             r["evidence"].append(f"{len(hi)} 条高购买意图长尾，例：《{hi[0]}》")
+        else:
+            know = [w for w in pool if re.search(KNOWLEDGE, w)]
+            if know:
+                r["evidence"].append(
+                    f"需求词全是问法（例：《{know[0]}》）→ 在找知识不在找工具，"
+                    f"付费意愿存疑")
     else:
         s -= 2
-        r["blockers"].append("没有相关搜索词 → 基本没人在搜，这是最危险的信号")
+        r["blockers"].append(
+            "相关搜索与 360 补全都为空 → 基本没人在搜，这是最危险的信号")
 
     # ── 一票否决 ────────────────────────────────────────
     if len(fb) >= 4:
@@ -229,11 +294,19 @@ def render(r):
     if r.get("signals"):
         L.append("      标题信号: " + " | ".join(f"{k}×{v}" for k, v in r["signals"].items()))
     if r.get("high_intent"):
-        L.append(f"需求  高购买意图长尾 {len(r['high_intent'])} 条:")
+        L.append(f"需求  高购买意图长尾 {len(r['high_intent'])} 条"
+                 f"（来源：{r.get('demand_used','相关搜索')}）:")
         for w in r["high_intent"][:5]:
             L.append(f"        ★ {w[:54]}")
     else:
-        L.append("需求  无高购买意图长尾")
+        L.append(f"需求  无高购买意图长尾（来源：{r.get('demand_used','相关搜索')}）")
+    # 相关搜索为空、改用补全时，把补全原文列出来——它是这条裁决的唯一需求证据，
+    # 不展示的话用户无法核对。
+    if not r.get("related_searches") and r.get("suggestions"):
+        L.append("      补全词样本: " +
+                 " / ".join(w[:20] for w in r["suggestions"][:4]))
+    if r.get("error_suggest"):
+        L.append(f"      补全源不可用: {r['error_suggest'][:40]}")
     if r.get("freebie"):
         L.append(f"      免费白嫖词 {len(r['freebie'])} 条: " +
                  " / ".join(w[:22] for w in r["freebie"][:3]))

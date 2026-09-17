@@ -25,18 +25,24 @@
 
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.parse
-import urllib.request
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 except (AttributeError, ValueError):
     pass
 
-UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-      "(KHTML, like Gecko) Chrome/120 Safari/537.36")
+# HTTP 层统一交给 _http：磁盘缓存 + GitHub 配额门 + 跨进程配额持久化。
+#
+# 这里原来是裸 urllib：不打缓存、不读 X-RateLimit-Remaining、也不落盘配额。
+# 后果是阶梯扫描（一次 12+ 个请求，最费配额的路径）**最容易撞 10 次/分钟**，
+# 撞了就中断，而它的固定 sleep 只是猜间隔、不是读配额——相邻两个词若命中
+# 缓存，那 12 秒也是白等。改用 _http 后与其他引擎同一套节流与缓存。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _http  # noqa: E402
 
 # 收窄修饰语：把宽词切到具体人群/场景/动作。这些是通用维度，不猜具体行业。
 MODIFIERS = [
@@ -57,14 +63,7 @@ GH_TIERS = [
 def gh_count(kw):
     u = ("https://api.github.com/search/repositories?q="
          + urllib.parse.quote(kw) + "&per_page=1")
-    h = {"User-Agent": UA, "Accept": "application/json"}
-    import os
-    tok = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-    if tok:
-        h["Authorization"] = f"Bearer {tok}"
-    req = urllib.request.Request(u, headers=h)
-    with urllib.request.urlopen(req, timeout=20) as r:
-        return json.loads(r.read().decode("utf-8", "ignore")).get("total_count", 0)
+    return json.loads(_http.fetch(u, timeout=20)).get("total_count", 0)
 
 
 def autocomplete(kw):
@@ -76,9 +75,7 @@ def autocomplete(kw):
         (f"https://api.bing.com/osjson.aspx?query={q}", lambda d: d[1]),
     ]:
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": UA})
-            with urllib.request.urlopen(req, timeout=12) as r:
-                d = json.loads(r.read().decode("utf-8", "ignore"))
+            d = json.loads(_http.fetch(url, timeout=12, tries=1))
             out.extend(pick(d) or [])
         except Exception:                                    # noqa: BLE001
             pass
